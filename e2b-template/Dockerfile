@@ -9,8 +9,9 @@ RUN npm install -g @anthropic-ai/claude-code
 WORKDIR /home/user
 
 # Default env placeholders (overridden at sandbox creation via envs)
+# Use a free model by default; paid models require paid Pollen enabled on the key
 ENV ANTHROPIC_BASE_URL=https://gen.pollinations.ai
-ENV ANTHROPIC_MODEL=claude-sonnet-4-5
+ENV ANTHROPIC_MODEL=openai/gpt-5.4-nano
 
 # Keep container alive; E2B manages lifecycle.
 CMD ["bash"]

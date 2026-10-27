@@ -99,7 +99,7 @@ export const e2bProvider: SandboxProvider = {
       .filter((s: SandboxInfo) => s.metadata?.pollinations_sub === sub);
   },
   async get({ apiKey, id }) {
-    const data = (await req({ apiKey }, "GET", `/v2/sandboxes/${id}`)) as Record<string, unknown> | null;
+    const data = (await req({ apiKey }, "GET", `/sandboxes/${id}`)) as Record<string, unknown> | null;
     return {
       sandboxId: (data?.sandboxID ?? data?.id ?? id) as string,
       templateId: data?.templateID as string | undefined,
@@ -110,10 +110,10 @@ export const e2bProvider: SandboxProvider = {
     };
   },
   async pause({ apiKey, id }) {
-    await req({ apiKey }, "POST", `/v2/sandboxes/${id}/pause`);
+    await req({ apiKey }, "POST", `/sandboxes/${id}/pause`);
   },
   async resume({ apiKey, id, timeout = 300 }) {
-    const data = (await req({ apiKey }, "POST", `/v2/sandboxes/${id}/resume`, {
+    const data = (await req({ apiKey }, "POST", `/sandboxes/${id}/connect`, {
       timeout,
     })) as Record<string, unknown> | null;
     return {
@@ -126,13 +126,13 @@ export const e2bProvider: SandboxProvider = {
     };
   },
   async delete({ apiKey, id }) {
-    await req({ apiKey }, "DELETE", `/v2/sandboxes/${id}`);
+    await req({ apiKey }, "DELETE", `/sandboxes/${id}`);
   },
   async keepAlive({ apiKey, id, timeout }) {
-    await req({ apiKey }, "POST", `/v2/sandboxes/${id}/timeout`, { timeout });
+    await req({ apiKey }, "POST", `/sandboxes/${id}/connect`, { timeout });
   },
   async setNetwork({ apiKey, id }) {
-    await req({ apiKey }, "PUT", `/v2/sandboxes/${id}/network`, {
+    await req({ apiKey }, "PUT", `/sandboxes/${id}/network`, {
       denyOut: ["0.0.0.0/0"],
       allowOut: [
         "gen.pollinations.ai",

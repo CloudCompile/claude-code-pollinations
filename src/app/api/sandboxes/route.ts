@@ -19,7 +19,7 @@ export async function POST(req: Request) {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   const body = await req.json().catch(() => ({}));
-  const model = body?.model ?? "claude-sonnet-4-5";
+  const model = body?.model ?? "openai/gpt-5.4-nano";
   const timeout = Math.min(body?.timeout ?? 300, 600);
   try {
     const info = await e2bProvider.create({

@@ -30,8 +30,8 @@ if (!created) process.exit(1);
 const id = created.sandboxID ?? created.id ?? created.sandboxId;
 console.log("created", id);
 
-await call("GET", `/v2/sandboxes/${id}`);
-await call("POST", `/v2/sandboxes/${id}/pause`);
-await call("POST", `/v2/sandboxes/${id}/resume`, { timeout: 120 });
-await call("DELETE", `/v2/sandboxes/${id}`);
+await call("GET", `/sandboxes/${id}`);
+await call("POST", `/sandboxes/${id}/pause`);
+await call("POST", `/sandboxes/${id}/connect`, { timeout: 120 });
+await call("DELETE", `/sandboxes/${id}`);
 console.log("done");
