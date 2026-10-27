@@ -83,7 +83,7 @@ export const e2bProvider: SandboxProvider = {
     const data = await req({ apiKey }, "GET", "/v2/sandboxes");
     const arr = Array.isArray(data) ? data : data?.sandboxes ?? [];
     return arr
-      .map((d: any) => ({
+      .map((d: unknown) => ({
         sandboxId: d?.sandboxID ?? d?.id ?? d?.sandboxId,
         templateId: d?.templateID,
         state: d?.state,

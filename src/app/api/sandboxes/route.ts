@@ -10,7 +10,7 @@ export async function GET() {
   try {
     const list = await e2bProvider.list({ apiKey: session.sk, sub: session.sub });
     return NextResponse.json({ sandboxes: list });
-  } catch (e: any) {
+  } catch (e: unknown) {
     return handleError(e);
   }
 }
@@ -36,13 +36,13 @@ export async function POST(req: Request) {
       console.warn("setNetwork failed", e);
     }
     return NextResponse.json({ sandbox: info }, { status: 201 });
-  } catch (e: any) {
+  } catch (e: unknown) {
     return handleError(e);
   }
 }
 
-function handleError(e: any) {
-  const status = e?.status ?? 500;
+function handleError(e: unknown) {
+  const status = (e as {status?:number})?.status ?? 500;
   if (status === 402) {
     return NextResponse.json(
       { error: "insufficient_credits", message: "Not enough Pollen credits." },
@@ -59,7 +59,7 @@ function handleError(e: any) {
     return NextResponse.json({ error: "not_found", message: "Sandbox not found." }, { status: 404 });
   }
   return NextResponse.json(
-    { error: "sandbox_error", message: e?.body ?? e?.message ?? "unknown" },
+    { error: "sandbox_error", message: (e as {body?:string})?.body ?? (e as {message?:string})?.message ?? "unknown" },
     { status },
   );
 }

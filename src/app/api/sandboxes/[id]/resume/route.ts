@@ -11,7 +11,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
   try {
     const info = await e2bProvider.resume({ apiKey: session.sk, id, timeout: body?.timeout ?? 300 });
     return NextResponse.json({ sandbox: info });
-  } catch (e: any) {
-    return NextResponse.json({ error: "sandbox_error", message: e?.body ?? e?.message }, { status: e?.status ?? 500 });
+  } catch (e: unknown) {
+    return NextResponse.json({ error: "sandbox_error", message: (e as {body?:string})?.body ?? (e as {message?:string})?.message }, { status: (e as {status?:number})?.status ?? 500 });
   }
 }

@@ -10,7 +10,7 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
   try {
     const info = await e2bProvider.get({ apiKey: session.sk, id });
     return NextResponse.json({ sandbox: info });
-  } catch (e: any) {
+  } catch (e: unknown) {
     return handleError(e);
   }
 }
@@ -22,15 +22,15 @@ export async function DELETE(_req: Request, ctx: { params: Promise<{ id: string 
   try {
     await e2bProvider.delete({ apiKey: session.sk, id });
     return NextResponse.json({ ok: true });
-  } catch (e: any) {
+  } catch (e: unknown) {
     return handleError(e);
   }
 }
 
-function handleError(e: any) {
-  const status = e?.status ?? 500;
+function handleError(e: unknown) {
+  const status = (e as {status?:number})?.status ?? 500;
   if (status === 404) {
     return NextResponse.json({ error: "not_found", message: "Sandbox not found." }, { status: 404 });
   }
-  return NextResponse.json({ error: "sandbox_error", message: e?.body ?? e?.message }, { status });
+  return NextResponse.json({ error: "sandbox_error", message: (e as {body?:string})?.body ?? (e as {message?:string})?.message }, { status });
 }

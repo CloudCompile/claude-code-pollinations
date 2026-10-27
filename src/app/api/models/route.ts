@@ -9,7 +9,7 @@ export async function GET() {
   try {
     const models = await getTextModels();
     return NextResponse.json({ models });
-  } catch (e: any) {
+  } catch (e: unknown) {
     return NextResponse.json({ error: "models_error", message: e?.message }, { status: 500 });
   }
 }
