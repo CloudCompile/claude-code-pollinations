@@ -1,4 +1,3 @@
-import { env } from "./env";
 
 const POLLINATIONS_BASE = "https://gen.pollinations.ai";
 

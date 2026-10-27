@@ -59,7 +59,7 @@ export interface SandboxProvider {
 
 export const e2bProvider: SandboxProvider = {
   async create({ apiKey, templateId, timeout, sub, model }) {
-    const data = await req({ apiKey }, "POST", "/v2/sandboxes", {
+    const data = (await req({ apiKey }, "POST", "/v2/sandboxes", {
       templateID: templateId,
       timeout,
       metadata: { pollinations_sub: sub },
@@ -68,56 +68,61 @@ export const e2bProvider: SandboxProvider = {
         ANTHROPIC_AUTH_TOKEN: apiKey,
         ANTHROPIC_MODEL: model,
       },
-    });
+    })) as Record<string, unknown> | null;
     const info: SandboxInfo = {
-      sandboxId: data?.sandboxID ?? data?.id ?? data?.sandboxId,
-      templateId: data?.templateID ?? templateId,
-      state: data?.state,
-      metadata: data?.metadata,
-      startedAt: data?.startedAt,
-      endAt: data?.endAt,
+      sandboxId: (data?.sandboxID ?? data?.id ?? data?.sandboxId) as string,
+      templateId: (data?.templateID ?? templateId) as string,
+      state: data?.state as string | undefined,
+      metadata: data?.metadata as Record<string, string> | undefined,
+      startedAt: data?.startedAt as string | undefined,
+      endAt: data?.endAt as string | undefined,
     };
     return info;
   },
   async list({ apiKey, sub }) {
-    const data = await req({ apiKey }, "GET", "/v2/sandboxes");
-    const arr = Array.isArray(data) ? data : data?.sandboxes ?? [];
+    const data = (await req({ apiKey }, "GET", "/v2/sandboxes")) as
+      | Record<string, unknown>
+      | unknown[];
+    const arr = Array.isArray(data) ? data : ((data as Record<string, unknown>)?.sandboxes as unknown[]) ?? [];
     return arr
-      .map((d: unknown) => ({
-        sandboxId: d?.sandboxID ?? d?.id ?? d?.sandboxId,
-        templateId: d?.templateID,
-        state: d?.state,
-        metadata: d?.metadata,
-        startedAt: d?.startedAt,
-        endAt: d?.endAt,
-      }))
+      .map((d: unknown) => {
+        const o = (d ?? {}) as Record<string, unknown>;
+        return {
+          sandboxId: (o.sandboxID ?? o.id ?? o.sandboxId) as string,
+          templateId: o.templateID as string | undefined,
+          state: o.state as string | undefined,
+          metadata: o.metadata as Record<string, string> | undefined,
+          startedAt: o.startedAt as string | undefined,
+          endAt: o.endAt as string | undefined,
+        };
+      })
       .filter((s: SandboxInfo) => s.metadata?.pollinations_sub === sub);
   },
   async get({ apiKey, id }) {
-    const data = await req({ apiKey }, "GET", `/v2/sandboxes/${id}`);
+    const data = (await req({ apiKey }, "GET", `/v2/sandboxes/${id}`)) as Record<string, unknown> | null;
     return {
-      sandboxId: data?.sandboxID ?? data?.id ?? id,
-      templateId: data?.templateID,
-      state: data?.state,
-      metadata: data?.metadata,
-      startedAt: data?.startedAt,
-      endAt: data?.endAt,
+      sandboxId: (data?.sandboxID ?? data?.id ?? id) as string,
+      templateId: data?.templateID as string | undefined,
+      state: data?.state as string | undefined,
+      metadata: data?.metadata as Record<string, string> | undefined,
+      startedAt: data?.startedAt as string | undefined,
+      endAt: data?.endAt as string | undefined,
     };
   },
   async pause({ apiKey, id }) {
     await req({ apiKey }, "POST", `/v2/sandboxes/${id}/pause`);
   },
   async resume({ apiKey, id, timeout = 300 }) {
-    const data = await req({ apiKey }, "POST", `/v2/sandboxes/${id}/resume`, {
+    const data = (await req({ apiKey }, "POST", `/v2/sandboxes/${id}/resume`, {
       timeout,
-    });
+    })) as Record<string, unknown> | null;
     return {
-      sandboxId: data?.sandboxID ?? data?.id ?? id,
-      templateId: data?.templateID,
-      state: data?.state,
-      metadata: data?.metadata,
-      startedAt: data?.startedAt,
-      endAt: data?.endAt,
+      sandboxId: (data?.sandboxID ?? data?.id ?? id) as string,
+      templateId: data?.templateID as string | undefined,
+      state: data?.state as string | undefined,
+      metadata: data?.metadata as Record<string, string> | undefined,
+      startedAt: data?.startedAt as string | undefined,
+      endAt: data?.endAt as string | undefined,
     };
   },
   async delete({ apiKey, id }) {

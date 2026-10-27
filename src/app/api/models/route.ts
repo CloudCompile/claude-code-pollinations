@@ -10,6 +10,7 @@ export async function GET() {
     const models = await getTextModels();
     return NextResponse.json({ models });
   } catch (e: unknown) {
-    return NextResponse.json({ error: "models_error", message: e?.message }, { status: 500 });
+    const msg = e instanceof Error ? e.message : "unknown error";
+    return NextResponse.json({ error: "models_error", message: msg }, { status: 500 });
   }
 }
