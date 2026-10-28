@@ -1,9 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { SLASH_COMMANDS, lookupSlash, type SlashCommand } from "@/lib/slash-commands";
 
 type ChatEvent =
   | { type: "system"; subtype: string; session_id?: string }
@@ -12,6 +13,7 @@ type ChatEvent =
   | { type: "tool_use"; id: string; name: string; input: unknown }
   | { type: "tool_result"; tool_use_id: string; content: string; is_error?: boolean }
   | { type: "result"; subtype: string; result?: string; is_error?: boolean }
+  | { type: "usage"; input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number; cost_usd?: number }
   | { type: "stderr"; text: string }
   | { type: "error"; message: string }
   | { type: "done"; exitCode?: number };
@@ -23,7 +25,24 @@ type Item =
   | { kind: "tool"; name: string; input: unknown; result?: string; isError?: boolean }
   | { kind: "notice"; text: string };
 
-type Model = { id: string; title?: string; paid_only?: boolean; reasoning?: boolean };
+type Model = {
+  id: string;
+  title?: string;
+  paid_only?: boolean;
+  reasoning?: boolean;
+  community?: boolean;
+  context_length?: number;
+  publisher?: string;
+  health?: { status?: string; success_rate?: number };
+};
+
+type Template = {
+  id: string;
+  cpuCount: number;
+  memoryMB: number;
+  pollenPerHour: number;
+  provider: "e2b" | "azure";
+};
 
 export default function SandboxChatPage() {
   const params = useParams();
@@ -42,6 +61,14 @@ export default function SandboxChatPage() {
   const [tab, setTab] = useState<"chat" | "terminal">("chat");
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [staleSession, setStaleSession] = useState(false);
+  const [templates, setTemplates] = useState<Template[]>([]);
+  const [usageState, setUsageState] = useState<{ input?: number; output?: number; context?: number; limit?: number; cost?: number } | null>(null);
+  const [uploadOpen, setUploadOpen] = useState(false);
+  const [uploadFiles, setUploadFiles] = useState<File[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const [uploadMsg, setUploadMsg] = useState<string | null>(null);
+  const [slashOpen, setSlashOpen] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -53,6 +80,12 @@ export default function SandboxChatPage() {
       .then((r) => r.json())
       .then((d) => {
         if (!cancelled && Array.isArray(d.models)) setModels(d.models);
+      })
+      .catch(() => undefined);
+    fetch("/api/sandbox-pricing")
+      .then((r) => r.json())
+      .then((d) => {
+        if (!cancelled && Array.isArray(d.templates)) setTemplates(d.templates);
       })
       .catch(() => undefined);
     return () => {
@@ -84,7 +117,6 @@ export default function SandboxChatPage() {
       }
     })();
     const t = setInterval(async () => {
-      // keep-alive: 5 min lease while the user is on the page
       await fetch(`/api/sandboxes/${sandboxId}/keep-alive`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -185,6 +217,13 @@ export default function SandboxChatPage() {
               setItems((prev) => [...prev, { kind: "notice", text: ev.result! }]);
             }
             break;
+          case "usage":
+            setUsageState({
+              input: ev.input_tokens,
+              output: ev.output_tokens,
+              cost: ev.cost_usd,
+            });
+            break;
           case "error":
             setItems((prev) => [...prev, { kind: "notice", text: ev.message }]);
             break;
@@ -222,31 +261,73 @@ export default function SandboxChatPage() {
     }
   }
 
-  const filteredModels = models.filter((m) =>
-    m.id.toLowerCase().includes(modelFilter.toLowerCase()),
+  const filteredModels = useMemo(
+    () => models.filter((m) => m.id.toLowerCase().includes(modelFilter.toLowerCase())),
+    [models, modelFilter],
   );
+
+  // match model to catalog entry for context limit / labels
+  const modelInfo = useMemo(() => models.find((m) => m.id === model), [models, model]);
+  const contextLimit = modelInfo?.context_length ?? 200_000;
+
+  // slash command detection while typing
+  const slashCmd = useMemo(() => lookupSlash(input), [input]);
+
+  function selectSlash(cmd: SlashCommand) {
+    setInput(cmd.name + " ");
+    setSlashOpen(false);
+    inputRef.current?.focus();
+  }
+
+  async function doUpload() {
+    if (uploadFiles.length === 0) return;
+    setUploading(true);
+    setUploadMsg(null);
+    try {
+      const form = new FormData();
+      for (const f of uploadFiles) form.append("files", f);
+      const res = await fetch(`/api/sandboxes/${sandboxId}/upload`, {
+        method: "POST",
+        body: form,
+      });
+      const d = await res.json();
+      if (!res.ok) {
+        setUploadMsg(d.message ?? d.error ?? "upload failed");
+      } else {
+        const parts: string[] = [];
+        if (d.skills?.length) parts.push(`${d.skills.length} skill(s) installed`);
+        if (d.written?.length) parts.push(`${d.written.length} file(s) written`);
+        setUploadMsg(parts.join(" · "));
+        setUploadFiles([]);
+      }
+    } finally {
+      setUploading(false);
+    }
+  }
 
   return (
     <div className="flex h-screen flex-col">
       {/* header */}
-      <header className="flex items-center justify-between border-b border-zinc-800 px-4 py-2.5">
-        <div className="flex items-center gap-3">
+      <header className="flex items-center justify-between gap-3 border-b border-[var(--border)] bg-white/70 px-4 py-2.5 backdrop-blur">
+        <div className="flex min-w-0 items-center gap-2.5">
           <button
             onClick={() => router.push("/dashboard")}
-            className="text-zinc-500 hover:text-zinc-300"
+            className="rounded-lg p-1.5 text-[var(--muted)] hover:bg-[var(--panel)] hover:text-[var(--foreground)]"
             title="Back to sandboxes"
           >
             ←
           </button>
-          <span className="text-lg">⌾</span>
-          <span className="font-mono text-sm text-zinc-400">{sandboxId.slice(0, 14)}…</span>
+          <span className="font-serif text-lg">⌾</span>
+          <span className="truncate font-mono text-xs text-[var(--muted)]">
+            {sandboxId.slice(0, 16)}…
+          </span>
           <span
-            className={`rounded-full px-2 py-0.5 text-xs ${
+            className={`rounded-full px-2 py-0.5 text-[11px] ${
               sandboxState === "running"
-                ? "bg-green-950 text-green-400"
+                ? "bg-orange-100 text-orange-800"
                 : sandboxState === "gone"
-                  ? "bg-red-950 text-red-400"
-                  : "bg-zinc-800 text-zinc-400"
+                  ? "bg-red-100 text-red-700"
+                  : "bg-[var(--panel)] text-[var(--muted)]"
             }`}
           >
             {sandboxState}
@@ -258,65 +339,135 @@ export default function SandboxChatPage() {
           <div className="relative">
             <button
               onClick={() => setModelOpen((o) => !o)}
-              className="flex items-center gap-2 rounded-lg border border-zinc-800 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-900"
+              className="flex max-w-[220px] items-center gap-2 rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs text-[var(--foreground)] hover:border-[var(--accent)]"
             >
-              <span className="max-w-[240px] truncate font-mono text-xs">{model}</span>
-              <span className="text-zinc-600">▾</span>
+              <span className="truncate font-mono">{model}</span>
+              <span className="shrink-0 text-[var(--muted)]">▾</span>
             </button>
             {modelOpen && (
-              <div className="absolute right-0 z-10 mt-1 w-96 rounded-xl border border-zinc-800 bg-zinc-900 shadow-xl">
-                <input
-                  autoFocus
-                  value={modelFilter}
-                  onChange={(e) => setModelFilter(e.target.value)}
-                  placeholder="Filter models…"
-                  className="w-full border-b border-zinc-800 bg-transparent px-4 py-2.5 text-sm outline-none placeholder:text-zinc-600"
-                />
-                <ul className="max-h-80 overflow-y-auto p-1">
-                  {filteredModels.slice(0, 50).map((m) => (
-                    <li key={m.id}>
-                      <button
-                        onClick={() => {
-                          setModel(m.id);
-                          setModelOpen(false);
-                          setModelFilter("");
-                        }}
-                        className={`flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-sm hover:bg-zinc-800 ${
-                          m.id === model ? "text-blue-400" : "text-zinc-300"
-                        }`}
-                      >
-                        <span className="truncate font-mono text-xs">{m.id}</span>
-                        <span className="flex shrink-0 gap-1">
-                          {m.reasoning && (
-                            <span className="rounded bg-zinc-800 px-1.5 text-[10px] text-zinc-400">
-                              reasoning
-                            </span>
-                          )}
-                          {m.paid_only && (
-                            <span className="rounded bg-amber-950 px-1.5 text-[10px] text-amber-400">
-                              paid
-                            </span>
-                          )}
-                        </span>
-                      </button>
-                    </li>
+              <div className="absolute right-0 z-20 mt-1 w-[420px] animate-fade-up rounded-xl border border-[var(--border)] bg-white shadow-2xl">
+                <div className="flex items-center gap-2 border-b border-[var(--border)] px-3 py-2">
+                  <span className="text-xs text-[var(--muted)]">🔍</span>
+                  <input
+                    autoFocus
+                    value={modelFilter}
+                    onChange={(e) => setModelFilter(e.target.value)}
+                    placeholder="Search models…"
+                    className="w-full bg-transparent text-sm outline-none placeholder:text-[var(--muted)]"
+                  />
+                </div>
+                <div className="flex border-b border-[var(--border)] p-1 text-[11px]">
+                  {[
+                    { key: "all", label: "All" },
+                    { key: "free", label: "Free" },
+                    { key: "community", label: "Community" },
+                  ].map((f) => (
+                    <button
+                      key={f.key}
+                      onClick={() => setModelFilter(f.key === "all" ? "" : f.key)}
+                      className={`rounded-md px-2.5 py-1 ${
+                        (f.key === "all" && !modelFilter) ||
+                        (f.key === "free" && modelFilter === "free") ||
+                        (f.key === "community" && modelFilter === "community")
+                          ? "bg-[var(--panel)] text-[var(--accent)]"
+                          : "text-[var(--muted)] hover:text-[var(--foreground)]"
+                      }`}
+                    >
+                      {f.label}
+                    </button>
                   ))}
+                </div>
+                <ul className="max-h-[320px] overflow-y-auto p-1">
+                  {(modelFilter === "free" || modelFilter === "community"
+                    ? filteredModels.filter((m) =>
+                        modelFilter === "free" ? !m.paid_only : m.community,
+                      )
+                    : filteredModels
+                  )
+                    .slice(0, 80)
+                    .map((m) => (
+                      <li key={m.id}>
+                        <button
+                          onClick={() => {
+                            setModel(m.id);
+                            setModelOpen(false);
+                            setModelFilter("");
+                          }}
+                          className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs hover:bg-[var(--panel)] ${
+                            m.id === model ? "text-[var(--accent)]" : "text-[var(--foreground)]"
+                          }`}
+                        >
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate font-mono">{m.id}</span>
+                            <span className="block truncate text-[10px] text-[var(--muted)]">
+                              {m.title ?? m.publisher ?? ""}
+                            </span>
+                          </span>
+                          <span className="flex shrink-0 gap-1">
+                            {m.community && (
+                              <span className="rounded bg-purple-100 px-1.5 py-0.5 text-[9px] text-purple-700">
+                                community
+                              </span>
+                            )}
+                            {m.paid_only ? (
+                              <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[9px] text-amber-700">
+                                paid
+                              </span>
+                            ) : (
+                              <span className="rounded bg-green-100 px-1.5 py-0.5 text-[9px] text-green-700">
+                                free
+                              </span>
+                            )}
+                            {m.reasoning && (
+                              <span className="rounded bg-[var(--panel)] px-1.5 py-0.5 text-[9px] text-[var(--muted)]">
+                                reasoning
+                              </span>
+                            )}
+                          </span>
+                        </button>
+                      </li>
+                    ))}
                   {filteredModels.length === 0 && (
-                    <li className="px-3 py-2 text-sm text-zinc-600">No models match</li>
+                    <li className="px-3 py-3 text-xs text-[var(--muted)]">No models match</li>
                   )}
                 </ul>
               </div>
             )}
           </div>
 
+          {/* upload */}
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            className="rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs text-[var(--foreground)] hover:border-[var(--accent)]"
+            title="Upload files or skills"
+          >
+            ⬆
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            className="hidden"
+            onChange={(e) => {
+              const files = Array.from(e.target.files ?? []);
+              if (files.length) {
+                setUploadFiles(files);
+                setUploadOpen(true);
+              }
+              e.target.value = "";
+            }}
+          />
+
           {/* tabs */}
-          <div className="flex rounded-lg border border-zinc-800 p-0.5 text-sm">
+          <div className="flex rounded-lg border border-[var(--border)] p-0.5 text-xs">
             {(["chat", "terminal"] as const).map((t) => (
               <button
                 key={t}
                 onClick={() => setTab(t)}
-                className={`rounded-md px-3 py-1 ${
-                  tab === t ? "bg-zinc-800 text-zinc-100" : "text-zinc-500 hover:text-zinc-300"
+                className={`rounded-md px-3 py-1.5 ${
+                  tab === t
+                    ? "bg-[var(--foreground)] text-[var(--background)]"
+                    : "text-[var(--muted)] hover:text-[var(--foreground)]"
                 }`}
               >
                 {t === "chat" ? "Chat" : "Terminal"}
@@ -327,8 +478,8 @@ export default function SandboxChatPage() {
       </header>
 
       {staleSession && (
-        <div className="flex flex-col items-center gap-3 border-b border-amber-900/50 bg-amber-950/30 px-4 py-6 text-center">
-          <p className="text-sm text-amber-300">
+        <div className="flex flex-col items-center gap-3 border-b border-amber-200 bg-amber-50 px-4 py-5 text-center">
+          <p className="text-sm text-amber-800">
             Your session key is missing the sandbox permission (added after you signed in).
           </p>
           <button
@@ -336,19 +487,54 @@ export default function SandboxChatPage() {
               await fetch("/api/auth/logout", { method: "POST" });
               window.location.href = "/api/auth/login";
             }}
-            className="rounded-lg bg-white px-4 py-2 text-sm font-medium text-zinc-950 hover:bg-zinc-200"
+            className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)]"
           >
             Sign in again to refresh
           </button>
         </div>
       )}
 
+      {uploadOpen && (
+        <div className="border-b border-[var(--border)] bg-[var(--panel)] px-4 py-3">
+          <div className="mx-auto flex max-w-3xl flex-col gap-2">
+            <div className="flex items-center justify-between text-xs">
+              <span className="font-medium">
+                {uploadFiles.length} file(s) ready
+                {uploadFiles.some((f) => f.name.endsWith(".skill") || /^SKILL\.md$/i.test(f.name))
+                  ? " — will install as skills"
+                  : " — will be written to /home/user"}
+              </span>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => {
+                    setUploadOpen(false);
+                    setUploadFiles([]);
+                    setUploadMsg(null);
+                  }}
+                  className="rounded-md px-3 py-1.5 text-[var(--muted)] hover:bg-white"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={doUpload}
+                  disabled={uploading}
+                  className="rounded-md bg-[var(--accent)] px-3 py-1.5 font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
+                >
+                  {uploading ? "Uploading…" : "Upload"}
+                </button>
+              </div>
+            </div>
+            {uploadMsg && <p className="text-xs text-[var(--accent)]">{uploadMsg}</p>}
+          </div>
+        </div>
+      )}
+
       {sandboxState === "gone" ? (
-        <div className="flex flex-1 flex-col items-center justify-center gap-3 text-zinc-500">
+        <div className="flex flex-1 flex-col items-center justify-center gap-3 text-[var(--muted)]">
           <p>This sandbox no longer exists.</p>
           <button
             onClick={() => router.push("/dashboard")}
-            className="rounded-lg bg-white px-4 py-2 text-sm font-medium text-zinc-950"
+            className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)]"
           >
             Back to sandboxes
           </button>
@@ -359,25 +545,36 @@ export default function SandboxChatPage() {
         <>
           {/* messages */}
           <div ref={scrollRef} className="flex-1 overflow-y-auto">
-            <div className="mx-auto max-w-3xl space-y-3 px-4 py-6">
+            <div className="mx-auto max-w-3xl px-5 py-7">
               {items.length === 0 && (
-                <div className="mt-24 text-center text-zinc-600">
-                  <p className="text-3xl">⌾</p>
-                  <p className="mt-3 text-sm">
-                    Claude Code runs in sandbox{" "}
-                    <span className="font-mono text-zinc-500">{sandboxId.slice(0, 14)}…</span>
+                <div className="mt-20 text-center">
+                  <p className="font-serif text-4xl text-[var(--accent)]">⌾</p>
+                  <p className="mt-4 font-serif text-xl text-[var(--foreground)]">
+                    Claude Code Cloud
                   </p>
-                  <p className="mt-1 text-xs">
-                    Ask it to build something. Files persist across messages.
+                  <p className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-[var(--muted)]">
+                    Claude Code runs in your sandbox. Ask it to build, fix, or explore
+                    anything — it has a shell, filesystem, and your chosen model.
                   </p>
+                  <div className="mt-6 flex flex-wrap items-center justify-center gap-2 text-[11px]">
+                    {SLASH_COMMANDS.slice(0, 8).map((c) => (
+                      <button
+                        key={c.name}
+                        onClick={() => selectSlash(c)}
+                        className="rounded-full border border-[var(--border)] px-3 py-1 font-mono text-[var(--muted)] hover:border-[var(--accent)] hover:text-[var(--accent)]"
+                      >
+                        {c.name}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               )}
               {items.map((item, i) => (
                 <Bubble key={i} item={item} />
               ))}
               {busy && (
-                <div className="flex items-center gap-2 text-xs text-zinc-500">
-                  <span className="h-1.5 w-1.5 animate-pulse-dot rounded-full bg-zinc-400" />
+                <div className="mt-2 flex items-center gap-2 text-xs text-[var(--muted)]">
+                  <span className="h-1.5 w-1.5 animate-pulse-dot rounded-full bg-[var(--accent)]" />
                   Claude Code is working…
                 </div>
               )}
@@ -385,34 +582,83 @@ export default function SandboxChatPage() {
           </div>
 
           {/* composer */}
-          <div className="border-t border-zinc-800 bg-zinc-950/80 px-4 py-3">
-            <div className="mx-auto flex max-w-3xl items-end gap-2">
-              <textarea
-                ref={inputRef}
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault();
-                    send();
+          <div className="border-t border-[var(--border)] bg-white/80 px-4 py-3 backdrop-blur">
+            <div className="mx-auto max-w-3xl">
+              {slashOpen && (
+                <div className="mb-2 max-h-56 overflow-y-auto rounded-xl border border-[var(--border)] bg-white shadow-xl">
+                  {SLASH_COMMANDS.filter((c) =>
+                    c.name.toLowerCase().includes(input.toLowerCase().replace("/", "")),
+                  ).map((c) => (
+                    <button
+                      key={c.name}
+                      onClick={() => selectSlash(c)}
+                      className="flex w-full items-center gap-3 px-3 py-2 text-left text-xs hover:bg-[var(--panel)]"
+                    >
+                      <span className="font-mono text-[var(--accent)]">{c.name}</span>
+                      <span className="truncate text-[var(--muted)]">{c.description}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+              <div className="flex items-end gap-2">
+                <button
+                  onClick={() => setSlashOpen((o) => !o)}
+                  className="mb-1 rounded-lg px-2 py-1 font-mono text-sm text-[var(--muted)] hover:bg-[var(--panel)] hover:text-[var(--accent)]"
+                  title="Slash commands"
+                >
+                  /
+                </button>
+                <textarea
+                  ref={inputRef}
+                  value={input}
+                  onChange={(e) => {
+                    setInput(e.target.value);
+                    if (input.trim().startsWith("/")) setSlashOpen(true);
+                    else setSlashOpen(false);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      send();
+                    }
+                    if (e.key === "Escape") setSlashOpen(false);
+                  }}
+                  placeholder={
+                    busy
+                      ? "Claude Code is working…"
+                      : slashCmd
+                        ? `${slashCmd.name} ${slashCmd.needsArg ? "…" : ""}`
+                        : "Ask Claude Code to build something…"
                   }
-                }}
-                placeholder={busy ? "Claude Code is working…" : "Ask Claude Code to build something…"}
-                rows={1}
-                disabled={busy}
-                className="max-h-40 flex-1 resize-none rounded-xl border border-zinc-800 bg-zinc-900 px-4 py-3 text-sm outline-none placeholder:text-zinc-600 focus:border-zinc-600 disabled:opacity-50"
-              />
-              <button
-                onClick={send}
-                disabled={!input.trim() || busy}
-                className="rounded-xl bg-white px-4 py-3 text-sm font-medium text-zinc-950 hover:bg-zinc-200 disabled:opacity-40"
-              >
-                Send
-              </button>
+                  rows={1}
+                  disabled={busy}
+                  className="max-h-40 flex-1 resize-none rounded-xl border border-[var(--border)] bg-white px-4 py-3 text-sm outline-none placeholder:text-[var(--muted)] focus:border-[var(--accent)] disabled:opacity-50"
+                />
+                <button
+                  onClick={send}
+                  disabled={!input.trim() || busy}
+                  className="rounded-xl bg-[var(--accent)] px-4 py-3 text-sm font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-40"
+                >
+                  {busy ? "Working…" : "Send"}
+                </button>
+              </div>
+              <div className="mt-1.5 flex items-center justify-between text-[11px] text-[var(--muted)]">
+                <span>Enter to send · Shift+Enter for newline</span>
+                {usageState && (
+                  <span className="flex items-center gap-3">
+                    {usageState.input !== undefined && (
+                      <span>{usageState.input.toLocaleString()} in</span>
+                    )}
+                    {usageState.output !== undefined && (
+                      <span>{usageState.output.toLocaleString()} out</span>
+                    )}
+                    {usageState.cost !== undefined && (
+                      <span className="text-[var(--accent)]">${usageState.cost.toFixed(4)}</span>
+                    )}
+                  </span>
+                )}
+              </div>
             </div>
-            <p className="mx-auto mt-1.5 max-w-3xl text-[11px] text-zinc-600">
-              Enter to send · Shift+Enter for newline · billed to your Pollen balance
-            </p>
           </div>
         </>
       )}
@@ -424,7 +670,7 @@ function Bubble({ item }: { item: Item }) {
   if (item.kind === "user") {
     return (
       <div className="flex justify-end">
-        <div className="max-w-[85%] rounded-2xl rounded-br-md bg-white px-4 py-2.5 text-sm text-zinc-950">
+        <div className="max-w-[85%] rounded-2xl rounded-br-md bg-[var(--user-bubble)] px-4 py-2.5 text-sm text-white">
           {item.text}
         </div>
       </div>
@@ -432,33 +678,37 @@ function Bubble({ item }: { item: Item }) {
   }
   if (item.kind === "assistant") {
     return (
-      <div className="md max-w-[90%] text-sm leading-relaxed text-zinc-200">
+      <div className="md mt-4 max-w-[92%] text-[14px] text-[var(--foreground)]">
         <ReactMarkdown remarkPlugins={[remarkGfm]}>{item.text}</ReactMarkdown>
       </div>
     );
   }
   if (item.kind === "thinking") {
     return (
-      <details className="max-w-[90%] text-xs text-zinc-500">
-        <summary className="cursor-pointer select-none text-zinc-600">💭 thinking</summary>
-        <div className="mt-1 whitespace-pre-wrap border-l border-zinc-800 pl-3">{item.text}</div>
+      <details className="mt-3 max-w-[92%] text-xs text-[var(--muted)]">
+        <summary className="cursor-pointer select-none text-[var(--muted)]">
+          💭 thinking
+        </summary>
+        <div className="mt-1.5 whitespace-pre-wrap border-l-2 border-[var(--border)] pl-3">
+          {item.text}
+        </div>
       </details>
     );
   }
   if (item.kind === "tool") {
     const inputStr = JSON.stringify(item.input, null, 2);
     return (
-      <details className="max-w-[90%] rounded-lg border border-zinc-800 bg-zinc-900/60 text-xs">
-        <summary className="cursor-pointer select-none px-3 py-2 text-zinc-400">
-          <span className="font-mono text-amber-400">⚙ {item.name}</span>
-          {item.isError && <span className="ml-2 text-red-400">error</span>}
+      <details className="mt-3 max-w-[92%] overflow-hidden rounded-xl border border-[var(--border)] text-xs">
+        <summary className="cursor-pointer select-none bg-[var(--panel)] px-3 py-2 text-[var(--foreground)]">
+          <span className="font-mono text-[var(--accent)]">⚙ {item.name}</span>
+          {item.isError && <span className="ml-2 text-red-600">error</span>}
         </summary>
-        <div className="border-t border-zinc-800 px-3 py-2">
-          <pre className="overflow-x-auto text-zinc-500">{inputStr}</pre>
+        <div className="bg-white px-3 py-2">
+          <pre className="overflow-x-auto text-[var(--muted)]">{inputStr}</pre>
           {item.result && (
             <pre
-              className={`mt-2 max-h-60 overflow-auto border-t border-zinc-800 pt-2 ${
-                item.isError ? "text-red-400" : "text-zinc-400"
+              className={`mt-2 max-h-60 overflow-auto border-t border-[var(--border)] pt-2 ${
+                item.isError ? "text-red-600" : "text-[var(--muted)]"
               }`}
             >
               {item.result}
@@ -470,16 +720,14 @@ function Bubble({ item }: { item: Item }) {
   }
   // notice
   return (
-    <div className="rounded-lg border border-amber-900/50 bg-amber-950/30 px-4 py-2.5 text-xs text-amber-300">
+    <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5 text-xs text-amber-800">
       {item.text}
     </div>
   );
 }
 
 function TerminalView({ sandboxId }: { sandboxId: string }) {
-  const [lines, setLines] = useState<string[]>([
-    "Remote shell in your sandbox.",
-  ]);
+  const [lines, setLines] = useState<string[]>(["Remote shell in your sandbox."]);
   const [cmd, setCmd] = useState("");
   const [running, setRunning] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -514,24 +762,24 @@ function TerminalView({ sandboxId }: { sandboxId: string }) {
   }
 
   return (
-    <div className="flex flex-1 flex-col bg-zinc-950 p-4 font-mono text-xs">
-      <div className="flex-1 overflow-y-auto rounded-lg border border-zinc-800 bg-black/60 p-3">
+    <div className="flex flex-1 flex-col bg-[#1f1e1c] p-4 font-mono text-xs">
+      <div className="flex-1 overflow-y-auto rounded-xl border border-[var(--border)] bg-black/30 p-3">
         {lines.map((l, i) => (
-          <pre key={i} className="whitespace-pre-wrap text-zinc-300">
+          <pre key={i} className="whitespace-pre-wrap text-zinc-200">
             {l}
           </pre>
         ))}
         <div ref={bottomRef} />
       </div>
-      <div className="mt-2 flex gap-2">
-        <span className="py-2 text-green-500">$</span>
+      <div className="mt-2 flex gap-2 text-zinc-200">
+        <span className="py-2 text-emerald-400">$</span>
         <input
           value={cmd}
           onChange={(e) => setCmd(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && run()}
           placeholder="ls -la"
           disabled={running}
-          className="flex-1 bg-transparent py-2 outline-none placeholder:text-zinc-700"
+          className="flex-1 bg-transparent py-2 outline-none placeholder:text-zinc-600"
           autoFocus
         />
       </div>

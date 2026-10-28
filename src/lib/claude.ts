@@ -13,7 +13,30 @@ export type ClaudeEvent =
     }
   | { type: "tool_result"; tool_use_id: string; content: string; is_error?: boolean }
   | { type: "result"; subtype: string; result?: string; is_error?: boolean; usage?: unknown }
+  | {
+      type: "usage";
+      input_tokens?: number;
+      output_tokens?: number;
+      cache_read_input_tokens?: number;
+      cache_creation_input_tokens?: number;
+      context_tokens?: number;
+      context_limit?: number;
+      cost_usd?: number;
+    }
   | { type: "raw"; line: string };
+
+// Context window size per model family, used to compute % used. Claude Code
+// reports token counts; the limit comes from the model catalog when present.
+export function contextLimitFor(model: string): number {
+  const m = model.toLowerCase();
+  if (m.includes("gemini")) return 1_000_000;
+  if (m.includes("nemotron-3.5")) return 1_048_576;
+  if (m.includes("kimi")) return 256_000;
+  if (m.includes("qwen")) return 256_000;
+  if (m.includes("gpt")) return 400_000;
+  if (m.includes("claude")) return 200_000;
+  return 200_000;
+}
 
 export function claudeCommand(model: string, resumeSessionId?: string | null): string {
   const parts = [
@@ -93,7 +116,20 @@ export function parseClaudeLine(line: string): ClaudeEvent[] {
       }
       break;
     }
-    case "result":
+    case "result": {
+      // The result event carries usage + cost; surface it as its own event
+      // so the UI can show context-window and spend state.
+      const usage = msg.usage as Record<string, number> | undefined;
+      if (usage) {
+        out.push({
+          type: "usage",
+          input_tokens: usage.input_tokens ?? usage.prompt_tokens,
+          output_tokens: usage.output_tokens ?? usage.completion_tokens,
+          cache_read_input_tokens: usage.cache_read_input_tokens ?? usage.cached_tokens,
+          cache_creation_input_tokens: usage.cache_creation_input_tokens,
+          cost_usd: msg.total_cost_usd as number | undefined,
+        });
+      }
       out.push({
         type: "result",
         subtype: msg.subtype as string,
@@ -102,6 +138,7 @@ export function parseClaudeLine(line: string): ClaudeEvent[] {
         usage: msg.usage,
       });
       break;
+    }
     default:
       out.push({ type: "raw", line: trimmed });
   }

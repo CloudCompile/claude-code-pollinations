@@ -21,10 +21,21 @@ export async function POST(req: Request) {
   const body = await req.json().catch(() => ({}));
   const model = body?.model ?? "openai/gpt-5.4-nano";
   const timeout = Math.min(body?.timeout ?? 300, 600);
+  // template: user-chosen size (pollinations, pollinations-large, pollinations-azure*)
+  // falls back to the configured default template.
+  const allowed = new Set([
+    "pollinations",
+    "pollinations-large",
+    "pollinations-azure",
+    "pollinations-azure-large",
+    "pollinations-azure-xl",
+  ]);
+  const requested = typeof body?.template === "string" ? body.template : "";
+  const templateId = allowed.has(requested) ? requested : env().E2B_TEMPLATE_ID;
   try {
     const info = await e2bProvider.create({
       apiKey: session.sk,
-      templateId: env().E2B_TEMPLATE_ID,
+      templateId,
       timeout,
       sub: session.sub,
       model,
