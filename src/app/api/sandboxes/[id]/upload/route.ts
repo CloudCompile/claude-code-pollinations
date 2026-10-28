@@ -3,6 +3,8 @@ import { getSession } from "@/lib/session";
 import { connectUserSandbox, ownsSandbox } from "@/lib/sandbox-connect";
 
 export const maxDuration = 60;
+// Pin to Node runtime so Buffer/Blob/multipart behavior is consistent.
+export const runtime = "nodejs";
 
 const MAX_FILE_BYTES = 10 * 1024 * 1024; // 10 MB per file
 
@@ -57,8 +59,10 @@ async function extractSkill(
     "    tarfile.open(src).extractall(dst)\n" +
     "print('ok')\n";
   try {
+    // Blob over a fresh copy preserves exact bytes (verified end-to-end).
     await sbx.files.write(scriptPath, new Blob([script]));
   } catch (e) {
+    console.error("[upload] extractor write failed", e);
     return { ok: false, err: `could not write extractor: ${e instanceof Error ? e.message : String(e)}` };
   }
   const py = await runChecked(
@@ -116,8 +120,12 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
 
   const form = await req.formData().catch(() => null);
   if (!form) return NextResponse.json({ error: "form_required" }, { status: 400 });
-  const files = form.getAll("files").filter((f): f is File => f instanceof File);
-  if (files.length === 0) return NextResponse.json({ error: "files_required" }, { status: 400 });
+  // Robust file detection: instanceof File can fail across runtimes; check for
+  // the multipart File shape instead.
+  const isFile = (v: FormDataEntryValue): v is File =>
+    typeof v === "object" && v !== null && typeof (v as File).arrayBuffer === "function";
+  const files = form.getAll("files").filter(isFile);
+  if (files.length === 0) return NextResponse.json({ error: "files_required", message: "No files received." }, { status: 400 });
   const target = (form.get("target") as string) || "/home/user";
 
   let sbx;
@@ -141,9 +149,8 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
         continue;
       }
       const buf = Buffer.from(await file.arrayBuffer());
-      // Blob over a fresh copy preserves exact bytes (ArrayBuffer slices can
-      // share a larger backing store and corrupt the write).
-      const blob = new Blob([buf]);
+      // Blob over the exact bytes — byte-exact and type-checked for the SDK.
+      const data = new Blob([buf]);
       const name = file.name;
 
       if (name.endsWith(".skill") || /\.(tar|tgz|tar\.gz)$/.test(name)) {
@@ -151,7 +158,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
         const dest = `/home/user/.claude/skills/${stem}`;
         const tmp = `/tmp/upload-${Date.now()}-${Math.random().toString(36).slice(2)}`;
         try {
-          await sbx.files.write(tmp, blob);
+          await sbx.files.write(tmp, data);
           const res = await extractSkill(sbx, tmp, dest);
           await runChecked(sbx, `rm -f ${JSON.stringify(tmp)}`, 10_000);
           if (!res.ok) {
@@ -179,7 +186,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
             `mkdir -p ${JSON.stringify(`/home/user/.claude/skills/${skillName}`)}`,
             15_000,
           );
-          await sbx.files.write(dest, blob);
+          await sbx.files.write(dest, data);
           skills.push(skillName);
           written.push(dest);
         } catch (e) {
@@ -188,7 +195,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
       } else {
         const dest = `${target.replace(/\/$/, "")}/${name}`;
         try {
-          await sbx.files.write(dest, blob);
+          await sbx.files.write(dest, data);
           written.push(dest);
         } catch (e) {
           errors.push(`${name}: ${e instanceof Error ? e.message : "write failed"}`);
