@@ -36,14 +36,6 @@ type Model = {
   health?: { status?: string; success_rate?: number };
 };
 
-type Template = {
-  id: string;
-  cpuCount: number;
-  memoryMB: number;
-  pollenPerHour: number;
-  provider: "e2b" | "azure";
-};
-
 export default function SandboxChatPage() {
   const params = useParams();
   const router = useRouter();
@@ -61,12 +53,12 @@ export default function SandboxChatPage() {
   const [tab, setTab] = useState<"chat" | "terminal">("chat");
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [staleSession, setStaleSession] = useState(false);
-  const [templates, setTemplates] = useState<Template[]>([]);
   const [usageState, setUsageState] = useState<{ input?: number; output?: number; context?: number; limit?: number; cost?: number } | null>(null);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploadFiles, setUploadFiles] = useState<File[]>([]);
   const [uploading, setUploading] = useState(false);
   const [uploadMsg, setUploadMsg] = useState<string | null>(null);
+  const [uploadTarget, setUploadTarget] = useState("/home/user");
   const [slashOpen, setSlashOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -80,12 +72,6 @@ export default function SandboxChatPage() {
       .then((r) => r.json())
       .then((d) => {
         if (!cancelled && Array.isArray(d.models)) setModels(d.models);
-      })
-      .catch(() => undefined);
-    fetch("/api/sandbox-pricing")
-      .then((r) => r.json())
-      .then((d) => {
-        if (!cancelled && Array.isArray(d.templates)) setTemplates(d.templates);
       })
       .catch(() => undefined);
     return () => {
@@ -266,10 +252,6 @@ export default function SandboxChatPage() {
     [models, modelFilter],
   );
 
-  // match model to catalog entry for context limit / labels
-  const modelInfo = useMemo(() => models.find((m) => m.id === model), [models, model]);
-  const contextLimit = modelInfo?.context_length ?? 200_000;
-
   // slash command detection while typing
   const slashCmd = useMemo(() => lookupSlash(input), [input]);
 
@@ -286,6 +268,7 @@ export default function SandboxChatPage() {
     try {
       const form = new FormData();
       for (const f of uploadFiles) form.append("files", f);
+      form.append("target", uploadTarget);
       const res = await fetch(`/api/sandboxes/${sandboxId}/upload`, {
         method: "POST",
         body: form,
@@ -439,10 +422,11 @@ export default function SandboxChatPage() {
           {/* upload */}
           <button
             onClick={() => fileInputRef.current?.click()}
-            className="rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs text-[var(--foreground)] hover:border-[var(--accent)]"
-            title="Upload files or skills"
+            className="flex items-center gap-1.5 rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs text-[var(--foreground)] hover:border-[var(--accent)]"
+            title="Upload files or skills (.skill, SKILL.md, any file)"
           >
-            ⬆
+            <span>⬆</span>
+            <span className="hidden sm:inline">Upload</span>
           </button>
           <input
             ref={fileInputRef}
@@ -486,7 +470,7 @@ export default function SandboxChatPage() {
           <button
             onClick={async () => {
               await fetch("/api/auth/logout", { method: "POST" });
-              window.location.href = "/api/auth/login";
+              router.push("/api/auth/login");
             }}
             className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)]"
           >
@@ -497,13 +481,10 @@ export default function SandboxChatPage() {
 
       {uploadOpen && (
         <div className="border-b border-[var(--border)] bg-[var(--panel)] px-4 py-3">
-          <div className="mx-auto flex max-w-3xl flex-col gap-2">
-            <div className="flex items-center justify-between text-xs">
-              <span className="font-medium">
-                {uploadFiles.length} file(s) ready
-                {uploadFiles.some((f) => f.name.endsWith(".skill") || /^SKILL\.md$/i.test(f.name))
-                  ? " — will install as skills"
-                  : " — will be written to /home/user"}
+          <div className="mx-auto flex max-w-3xl flex-col gap-3">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold">
+                {uploadFiles.length} file(s) — upload
               </span>
               <div className="flex gap-2">
                 <button
@@ -512,19 +493,50 @@ export default function SandboxChatPage() {
                     setUploadFiles([]);
                     setUploadMsg(null);
                   }}
-                  className="rounded-md px-3 py-1.5 text-[var(--muted)] hover:bg-white"
+                  className="rounded-md px-3 py-1.5 text-xs text-[var(--muted)] hover:bg-white"
                 >
                   Cancel
                 </button>
                 <button
                   onClick={doUpload}
                   disabled={uploading}
-                  className="rounded-md bg-[var(--accent)] px-3 py-1.5 font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
+                  className="rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
                 >
                   {uploading ? "Uploading…" : "Upload"}
                 </button>
               </div>
             </div>
+
+            {/* per-file destination preview */}
+            <ul className="max-h-40 space-y-1 overflow-y-auto">
+              {uploadFiles.map((f, i) => {
+                const isSkill = f.name.endsWith(".skill") || /^SKILL\.md$/i.test(f.name);
+                const loc = isSkill
+                  ? `~/.claude/skills/${f.name.replace(/\.(skill|tgz|tar\.gz|tar)$/, "") || f.name}/`
+                  : `${uploadTarget === "/home/user" ? "~" : uploadTarget}/${f.name}`;
+                return (
+                  <li key={i} className="flex items-center justify-between gap-3 rounded-md bg-white px-3 py-1.5 text-xs">
+                    <span className="truncate font-mono">{f.name} <span className="text-[var(--muted)]">({(f.size / 1024).toFixed(1)} KB)</span></span>
+                    <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] ${isSkill ? "bg-purple-100 text-purple-700" : "bg-[var(--panel)] text-[var(--muted)]"}`}>
+                      {isSkill ? "skill" : "file"}
+                    </span>
+                    <span className="shrink-0 truncate text-[10px] text-[var(--muted)]">{loc}</span>
+                  </li>
+                );
+              })}
+            </ul>
+
+            {/* target dir for regular files */}
+            <div className="flex items-center gap-2 text-xs">
+              <span className="text-[var(--muted)]">Files go to:</span>
+              <input
+                value={uploadTarget}
+                onChange={(e) => setUploadTarget(e.target.value)}
+                className="flex-1 rounded-md border border-[var(--border)] bg-white px-2 py-1 font-mono text-xs outline-none focus:border-[var(--accent)]"
+                placeholder="/home/user"
+              />
+            </div>
+
             {uploadMsg && <p className="text-xs text-[var(--accent)]">{uploadMsg}</p>}
           </div>
         </div>
