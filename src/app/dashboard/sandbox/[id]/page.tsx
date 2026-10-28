@@ -123,6 +123,70 @@ export default function SandboxChatPage() {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [items]);
 
+  // On mount, restore the saved conversation (transcript + Claude session id)
+  // for this sandbox so history survives a page reload.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/conversations");
+        if (!res.ok) return;
+        const data = await res.json();
+        const convs: Array<{
+          id: string;
+          sandbox_id?: string | null;
+          model?: string | null;
+        }> = data.conversations ?? [];
+        const conv = convs.find((c) => c.sandbox_id === sandboxId);
+        if (!conv || cancelled) return;
+        setConversationId(conv.id);
+        if (conv.model) setModel(conv.model);
+        const msgRes = await fetch(`/api/conversations/${conv.id}`);
+        if (!msgRes.ok || cancelled) return;
+        const msgData = await msgRes.json();
+        const msgs: Array<{ role: string; content: unknown }> = msgData.messages ?? [];
+        const restored: Item[] = [];
+        let lastSessionId: string | null = null;
+        for (const m of msgs) {
+          if (m.role === "user") {
+            if (typeof m.content === "string") restored.push({ kind: "user", text: m.content });
+          } else if (m.role === "assistant") {
+            const content = m.content as { events?: unknown[] } | string | null;
+            const events = content && typeof content === "object" ? content.events : undefined;
+            if (Array.isArray(events)) {
+              for (const ev of events) {
+                const e = ev as { type?: string; text?: string; name?: string; input?: unknown; content?: string; is_error?: boolean; session_id?: string };
+                if (e.type === "system" && e.session_id) lastSessionId = e.session_id;
+                else if (e.type === "assistant_text" && e.text) restored.push({ kind: "assistant", text: e.text });
+                else if (e.type === "assistant_thinking" && e.text) restored.push({ kind: "thinking", text: e.text });
+                else if (e.type === "tool_use" && e.name)
+                  restored.push({ kind: "tool", name: e.name, input: e.input });
+                else if (e.type === "tool_result" && e.content) {
+                  const last = restored[restored.length - 1];
+                  if (last && last.kind === "tool") {
+                    last.result = e.content;
+                    last.isError = e.is_error;
+                  }
+                }
+              }
+            } else if (typeof content === "string") {
+              restored.push({ kind: "assistant", text: content });
+            }
+          }
+        }
+        if (!cancelled) {
+          setItems(restored);
+          if (lastSessionId) setClaudeSessionId(lastSessionId);
+        }
+      } catch {
+        /* ignore load errors */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [sandboxId]);
+
   async function send() {
     const prompt = input.trim();
     if (!prompt || busy) return;
