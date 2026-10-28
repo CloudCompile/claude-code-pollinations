@@ -32,31 +32,37 @@ export function claudeCommand(model: string, resumeSessionId?: string | null): s
 export function parseClaudeLine(line: string): ClaudeEvent[] {
   const trimmed = line.trim();
   if (!trimmed) return [];
-  let msg: any;
+  let msg: Record<string, unknown>;
   try {
     msg = JSON.parse(trimmed);
   } catch {
     return [{ type: "raw", line: trimmed }];
   }
   const out: ClaudeEvent[] = [];
-  switch (msg?.type) {
+  const type = msg?.type as string | undefined;
+  switch (type) {
     case "system":
-      out.push({ type: "system", subtype: msg.subtype, session_id: msg.session_id });
+      out.push({
+        type: "system",
+        subtype: msg.subtype as string,
+        session_id: msg.session_id as string | undefined,
+      });
       break;
     case "assistant": {
-      const content = msg.message?.content;
+      const content = (msg.message as Record<string, unknown> | undefined)?.content;
       if (Array.isArray(content)) {
         for (const block of content) {
-          if (block?.type === "text" && block.text) {
-            out.push({ type: "assistant_text", text: block.text });
-          } else if (block?.type === "thinking" && block.thinking) {
-            out.push({ type: "assistant_thinking", text: block.thinking });
-          } else if (block?.type === "tool_use") {
+          const b = block as Record<string, unknown>;
+          if (b?.type === "text" && b.text) {
+            out.push({ type: "assistant_text", text: b.text as string });
+          } else if (b?.type === "thinking" && b.thinking) {
+            out.push({ type: "assistant_thinking", text: b.thinking as string });
+          } else if (b?.type === "tool_use") {
             out.push({
               type: "tool_use",
-              id: block.id,
-              name: block.name,
-              input: block.input,
+              id: b.id as string,
+              name: b.name as string,
+              input: b.input,
             });
           }
         }
@@ -64,20 +70,23 @@ export function parseClaudeLine(line: string): ClaudeEvent[] {
       break;
     }
     case "user": {
-      const content = msg.message?.content;
+      const content = (msg.message as Record<string, unknown> | undefined)?.content;
       if (Array.isArray(content)) {
         for (const block of content) {
-          if (block?.type === "tool_result") {
-            const c = typeof block.content === "string"
-              ? block.content
-              : Array.isArray(block.content)
-                ? block.content.map((x: any) => x?.text ?? "").join("\n")
-                : JSON.stringify(block.content);
+          const b = block as Record<string, unknown>;
+          if (b?.type === "tool_result") {
+            const raw = b.content;
+            const c =
+              typeof raw === "string"
+                ? raw
+                : Array.isArray(raw)
+                  ? raw.map((x) => (x as Record<string, unknown>)?.text ?? "").join("\n")
+                  : JSON.stringify(raw);
             out.push({
               type: "tool_result",
-              tool_use_id: block.tool_use_id,
+              tool_use_id: b.tool_use_id as string,
               content: c,
-              is_error: block.is_error,
+              is_error: b.is_error as boolean | undefined,
             });
           }
         }
@@ -87,9 +96,9 @@ export function parseClaudeLine(line: string): ClaudeEvent[] {
     case "result":
       out.push({
         type: "result",
-        subtype: msg.subtype,
-        result: msg.result,
-        is_error: msg.is_error,
+        subtype: msg.subtype as string,
+        result: msg.result as string | undefined,
+        is_error: msg.is_error as boolean | undefined,
         usage: msg.usage,
       });
       break;

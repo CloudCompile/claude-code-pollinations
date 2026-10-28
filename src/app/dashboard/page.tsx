@@ -35,8 +35,26 @@ export default function Dashboard() {
   }, [router]);
 
   useEffect(() => {
-    load();
-  }, [load]);
+    let cancelled = false;
+    (async () => {
+      // initial load, guarded against unmount
+      const res = await fetch("/api/sandboxes");
+      if (cancelled) return;
+      if (res.status === 401) {
+        router.push("/api/auth/login");
+        return;
+      }
+      const data = await res.json();
+      if (!cancelled) {
+        if (data.error) setError(data.message ?? data.error);
+        setSandboxes(data.sandboxes ?? []);
+        setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [router]);
 
   async function create() {
     setCreating(true);

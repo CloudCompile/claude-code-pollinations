@@ -33,7 +33,6 @@ export default function SandboxChatPage() {
   const [items, setItems] = useState<Item[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [models, setModels] = useState<Model[]>([]);
   const [model, setModel] = useState("openai/gpt-5.4-nano");
   const [modelOpen, setModelOpen] = useState(false);
@@ -48,12 +47,16 @@ export default function SandboxChatPage() {
 
   // load models
   useEffect(() => {
+    let cancelled = false;
     fetch("/api/models")
       .then((r) => r.json())
       .then((d) => {
-        if (Array.isArray(d.models)) setModels(d.models);
+        if (!cancelled && Array.isArray(d.models)) setModels(d.models);
       })
       .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // sandbox state + keep-alive while open
@@ -68,7 +71,17 @@ export default function SandboxChatPage() {
   }, [sandboxId]);
 
   useEffect(() => {
-    refreshState();
+    let cancelled = false;
+    (async () => {
+      const res = await fetch(`/api/sandboxes/${sandboxId}`);
+      if (cancelled) return;
+      if (res.ok) {
+        const d = await res.json();
+        setSandboxState(d.sandbox?.state ?? "unknown");
+      } else if (res.status === 404) {
+        setSandboxState("gone");
+      }
+    })();
     const t = setInterval(async () => {
       // keep-alive: 5 min lease while the user is on the page
       await fetch(`/api/sandboxes/${sandboxId}/keep-alive`, {
@@ -76,10 +89,16 @@ export default function SandboxChatPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ timeout: 300 }),
       }).catch(() => undefined);
-      refreshState();
+      const res = await fetch(`/api/sandboxes/${sandboxId}`);
+      if (cancelled || !res.ok) return;
+      const d = await res.json();
+      setSandboxState(d.sandbox?.state ?? "unknown");
     }, 240_000);
-    return () => clearInterval(t);
-  }, [sandboxId, refreshState]);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+  }, [sandboxId]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
@@ -90,7 +109,6 @@ export default function SandboxChatPage() {
     if (!prompt || busy) return;
     setInput("");
     setBusy(true);
-    setError(null);
     setItems((prev) => [...prev, { kind: "user", text: prompt }]);
 
     try {
@@ -118,7 +136,6 @@ export default function SandboxChatPage() {
       if (!res.ok || !res.body) {
         const d = await res.json().catch(() => ({}));
         const msg = d.message ?? d.error ?? "request failed";
-        setError(msg);
         setItems((prev) => [...prev, { kind: "notice", text: msg }]);
         return;
       }
@@ -160,7 +177,6 @@ export default function SandboxChatPage() {
             }
             break;
           case "error":
-            setError(ev.message);
             setItems((prev) => [...prev, { kind: "notice", text: ev.message }]);
             break;
           case "done":
