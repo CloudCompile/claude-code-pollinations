@@ -297,7 +297,8 @@ export default function SandboxChatPage() {
         const parts: string[] = [];
         if (d.skills?.length) parts.push(`${d.skills.length} skill(s) installed`);
         if (d.written?.length) parts.push(`${d.written.length} file(s) written`);
-        setUploadMsg(parts.join(" · "));
+        if (d.errors?.length) parts.push(`${d.errors.length} failed: ${d.errors.join("; ")}`);
+        setUploadMsg(parts.join(" · ") || "uploaded");
         setUploadFiles([]);
       }
     } finally {
