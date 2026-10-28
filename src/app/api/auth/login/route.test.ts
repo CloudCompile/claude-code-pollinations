@@ -11,7 +11,7 @@ describe("auth login route", () => {
     expect(u.origin).toBe("https://enter.pollinations.ai");
     expect(u.pathname).toBe("/authorize");
     expect(u.searchParams.get("response_type")).toBe("code");
-    expect(u.searchParams.get("scope")).toBe("profile usage");
+    expect(u.searchParams.get("scope")).toBe("profile usage machines");
     expect(u.searchParams.get("code_challenge_method")).toBe("S256");
     expect(u.searchParams.get("code_challenge")).toBeTruthy();
     expect(u.searchParams.get("state")).toBeTruthy();

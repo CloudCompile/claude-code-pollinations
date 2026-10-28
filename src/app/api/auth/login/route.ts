@@ -4,7 +4,10 @@ import { randomBytes, createHash } from "node:crypto";
 import { env } from "@/lib/env";
 
 const AUTH_BASE = "https://enter.pollinations.ai";
-const SCOPES = "profile usage";
+// `machines` is in scopes_supported on the discovery document and is required
+// for the E2B sandbox proxy. Requesting it here means the user grants it once
+// during consent; the issued sk_ key can then create sandboxes directly.
+const SCOPES = "profile usage machines";
 
 function base64url(buf: Buffer): string {
   return buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
