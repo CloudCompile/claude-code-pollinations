@@ -41,6 +41,7 @@ export default function SandboxChatPage() {
   const [sandboxState, setSandboxState] = useState<string>("unknown");
   const [tab, setTab] = useState<"chat" | "terminal">("chat");
   const [conversationId, setConversationId] = useState<string | null>(null);
+  const [staleSession, setStaleSession] = useState(false);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -135,6 +136,14 @@ export default function SandboxChatPage() {
 
       if (!res.ok || !res.body) {
         const d = await res.json().catch(() => ({}));
+        if (d.error === "stale_session") {
+          setStaleSession(true);
+          setItems((prev) => [
+            ...prev,
+            { kind: "notice", text: "Your session key is missing the sandbox permission." },
+          ]);
+          return;
+        }
         const msg = d.message ?? d.error ?? "request failed";
         setItems((prev) => [...prev, { kind: "notice", text: msg }]);
         return;
@@ -316,6 +325,23 @@ export default function SandboxChatPage() {
           </div>
         </div>
       </header>
+
+      {staleSession && (
+        <div className="flex flex-col items-center gap-3 border-b border-amber-900/50 bg-amber-950/30 px-4 py-6 text-center">
+          <p className="text-sm text-amber-300">
+            Your session key is missing the sandbox permission (added after you signed in).
+          </p>
+          <button
+            onClick={async () => {
+              await fetch("/api/auth/logout", { method: "POST" });
+              window.location.href = "/api/auth/login";
+            }}
+            className="rounded-lg bg-white px-4 py-2 text-sm font-medium text-zinc-950 hover:bg-zinc-200"
+          >
+            Sign in again to refresh
+          </button>
+        </div>
+      )}
 
       {sandboxState === "gone" ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-3 text-zinc-500">

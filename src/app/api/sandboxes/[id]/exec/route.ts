@@ -15,8 +15,17 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
   if (typeof command !== "string" || !command.trim()) {
     return NextResponse.json({ error: "command_required" }, { status: 400 });
   }
-  if (!(await ownsSandbox(session.sk, session.sub, id))) {
-    return NextResponse.json({ error: "not_found", message: "Sandbox not found." }, { status: 404 });
+  try {
+    if (!(await ownsSandbox(session.sk, session.sub, id))) {
+      return NextResponse.json({ error: "not_found", message: "Sandbox not found." }, { status: 404 });
+    }
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : "ownership check failed";
+    const stale = msg.includes("Sign out");
+    return NextResponse.json(
+      { error: stale ? "stale_session" : "sandbox_error", message: msg },
+      { status: stale ? 403 : 500 },
+    );
   }
   try {
     const sbx = await connectUserSandbox(session.sk, id, 60_000);
