@@ -4,7 +4,7 @@ import Link from "next/link";
 export default function Home() {
   return (
     <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
+      <main className="flex min-h-screen flex-col items-center justify-center gap-6 p-8 text-center">
         <Image
           className="dark:invert h-5 w-[100px]"
           src="/next.svg"
@@ -72,7 +72,7 @@ export default function Home() {
         </p>
         <Link
           href="/api/auth/login"
-          className="rounded bg-black px-4 py-2 text-white"
+          className="rounded-lg bg-white px-6 py-3 font-medium text-zinc-950 hover:bg-zinc-200"
         >
           Sign in with Pollinations
         </Link>

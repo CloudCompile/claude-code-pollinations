@@ -1,0 +1,23 @@
+{
+  "name": "music-visualizer",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "analyze": "python3 scripts/analyze_audio.py public/song.mp3 --fps 60 --out public/analysis.json --plot analysis-debug.png",
+    "studio": "remotion studio src/index.ts",
+    "still": "remotion still src/index.ts Visualizer out/still.png --frame=600",
+    "render": "remotion render src/index.ts Visualizer out/visualizer.mp4 --codec=h264 --crf=16",
+    "render:draft": "remotion render src/index.ts Visualizer out/draft.mp4 --scale=0.5 --crf=28"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.528",
+    "@remotion/media": "4.0.528",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "remotion": "4.0.528"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "typescript": "^5.6.0"
+  }
+}
