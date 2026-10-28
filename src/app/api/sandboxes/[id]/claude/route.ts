@@ -91,20 +91,17 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
         const msg = e instanceof Error ? e.message : String(e);
         send({ type: "error", message: msg });
       } finally {
-        // Persist the transcript if a conversation is bound.
+        // Persist the assistant transcript if a conversation is bound. The user
+        // message is persisted by the client immediately on send, so we only
+        // write the assistant/event payload here.
         if (conversationId) {
           try {
             const sb = supabaseAdmin();
             await sb.from("messages").insert({
               conversation_id: conversationId,
-              role: "user",
-              content: prompt,
-            });
-            await sb.from("messages").insert({
-              conversation_id: conversationId,
               role: "assistant",
               model,
-              content: { events: collectedEvents.slice(-200) },
+              content: { events: collectedEvents.slice(-300) },
             });
             await sb
               .from("conversations")

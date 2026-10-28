@@ -80,11 +80,15 @@ export async function GET(req: Request) {
     return NextResponse.redirect(new URL("/?error=no_sub", url.origin));
   }
 
-  const expiresIn = tokenJson.expires_in ?? 3600;
+  // The user's sk_ key may be long-lived ("never expires"), so do NOT tie the
+  // session cookie to the token's expires_in (which can be short/missing and
+  // cause frequent "logged out" errors). Use a generous, stable lifetime; the
+  // key itself is validated lazily on API calls.
+  const SESSION_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
   await setSessionCookie({
     sub,
     sk,
-    expiresAt: Date.now() + expiresIn * 1000,
+    expiresAt: Date.now() + SESSION_LIFETIME_MS,
   });
 
   return NextResponse.redirect(new URL("/dashboard", url.origin));

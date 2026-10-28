@@ -60,6 +60,7 @@ export default function SandboxChatPage() {
   const [uploadMsg, setUploadMsg] = useState<string | null>(null);
   const [uploadTarget, setUploadTarget] = useState("/home/user");
   const [slashOpen, setSlashOpen] = useState(false);
+  const [pendingQueue, setPendingQueue] = useState<string[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -146,6 +147,9 @@ export default function SandboxChatPage() {
         const msgData = await msgRes.json();
         const msgs: Array<{ role: string; content: unknown }> = msgData.messages ?? [];
         const restored: Item[] = [];
+        // tool_use_id -> index into restored[] so results can be paired even
+        // when text/thinking interleaves between a tool call and its result.
+        const toolIndex = new Map<string, number>();
         let lastSessionId: string | null = null;
         for (const m of msgs) {
           if (m.role === "user") {
@@ -155,17 +159,24 @@ export default function SandboxChatPage() {
             const events = content && typeof content === "object" ? content.events : undefined;
             if (Array.isArray(events)) {
               for (const ev of events) {
-                const e = ev as { type?: string; text?: string; name?: string; input?: unknown; content?: string; is_error?: boolean; session_id?: string };
+                const e = ev as { type?: string; text?: string; name?: string; input?: unknown; content?: string; is_error?: boolean; session_id?: string; id?: string; tool_use_id?: string };
                 if (e.type === "system" && e.session_id) lastSessionId = e.session_id;
                 else if (e.type === "assistant_text" && e.text) restored.push({ kind: "assistant", text: e.text });
                 else if (e.type === "assistant_thinking" && e.text) restored.push({ kind: "thinking", text: e.text });
-                else if (e.type === "tool_use" && e.name)
+                else if (e.type === "tool_use" && e.name) {
+                  const idx = restored.length;
                   restored.push({ kind: "tool", name: e.name, input: e.input });
+                  if (e.id) toolIndex.set(e.id, idx);
+                }
                 else if (e.type === "tool_result" && e.content) {
-                  const last = restored[restored.length - 1];
-                  if (last && last.kind === "tool") {
-                    last.result = e.content;
-                    last.isError = e.is_error;
+                  const idx = e.tool_use_id ? toolIndex.get(e.tool_use_id) : undefined;
+                  const target = idx !== undefined ? restored[idx] : undefined;
+                  if (target && target.kind === "tool") {
+                    target.result = e.content;
+                    target.isError = e.is_error;
+                  } else if (idx === undefined) {
+                    // orphan result — append as a notice to avoid losing it
+                    restored.push({ kind: "notice", text: `[tool result] ${String(e.content).slice(0, 200)}` });
                   }
                 }
               }
@@ -189,8 +200,18 @@ export default function SandboxChatPage() {
 
   async function send() {
     const prompt = input.trim();
-    if (!prompt || busy) return;
+    if (!prompt) return;
     setInput("");
+    // If a turn is already running, queue instead of dropping the message.
+    if (busy) {
+      setPendingQueue((q) => [...q, prompt]);
+      return;
+    }
+    await runTurn(prompt);
+  }
+
+  // One send-turn: persist user message, run claude, stream events.
+  async function runTurn(prompt: string) {
     setBusy(true);
     setItems((prev) => [...prev, { kind: "user", text: prompt }]);
 
@@ -208,6 +229,16 @@ export default function SandboxChatPage() {
           convId = d.conversation?.id ?? null;
           setConversationId(convId);
         }
+      }
+
+      // Persist the user message immediately (before streaming) so it survives
+      // a mid-run refresh even if the assistant response is interrupted.
+      if (convId) {
+        fetch(`/api/conversations/${convId}/messages`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ role: "user", content: prompt }),
+        }).catch(() => undefined);
       }
 
       const res = await fetch(`/api/sandboxes/${sandboxId}/claude`, {
@@ -308,6 +339,15 @@ export default function SandboxChatPage() {
     } finally {
       setBusy(false);
       inputRef.current?.focus();
+      // Dequeue the next queued message, if any.
+      setPendingQueue((q) => {
+        if (q.length > 0) {
+          const next = q[0];
+          void runTurn(next);
+          return q.slice(1);
+        }
+        return q;
+      });
     }
   }
 
@@ -330,24 +370,70 @@ export default function SandboxChatPage() {
     setUploading(true);
     setUploadMsg(null);
     try {
-      const form = new FormData();
-      for (const f of uploadFiles) form.append("files", f);
-      form.append("target", uploadTarget);
-      const res = await fetch(`/api/sandboxes/${sandboxId}/upload`, {
-        method: "POST",
-        body: form,
-      });
-      const d = await res.json();
-      if (!res.ok) {
-        setUploadMsg(d.message ?? d.error ?? "upload failed");
-      } else {
-        const parts: string[] = [];
-        if (d.skills?.length) parts.push(`${d.skills.length} skill(s) installed`);
-        if (d.written?.length) parts.push(`${d.written.length} file(s) written`);
-        if (d.errors?.length) parts.push(`${d.errors.length} failed: ${d.errors.join("; ")}`);
-        setUploadMsg(parts.join(" · ") || "uploaded");
-        setUploadFiles([]);
+      const results: { skills: string[]; written: string[]; errors: string[] } = {
+        skills: [],
+        written: [],
+        errors: [],
+      };
+      const CHUNK = 3 * 1024 * 1024; // 3 MB per request (< Vercel's ~4.5MB cap)
+
+      for (const f of uploadFiles) {
+        try {
+          if (f.size <= CHUNK) {
+            const form = new FormData();
+            form.append("files", f);
+            form.append("target", uploadTarget);
+            const res = await fetch(`/api/sandboxes/${sandboxId}/upload`, {
+              method: "POST",
+              body: form,
+            });
+            const d = await res.json().catch(() => ({ message: "Upload failed (server error)." }));
+            if (!res.ok) {
+              results.errors.push(`${f.name}: ${d.message ?? d.error ?? "upload failed"}`);
+            } else {
+              (d.skills ?? []).forEach((s: string) => results.skills.push(s));
+              (d.written ?? []).forEach((w: string) => results.written.push(w));
+              (d.errors ?? []).forEach((e: string) => results.errors.push(e));
+            }
+          } else {
+            // Chunked upload for large files.
+            const totalChunks = Math.ceil(f.size / CHUNK);
+            const buf = new Uint8Array(await f.arrayBuffer());
+            for (let i = 0; i < totalChunks; i += 1) {
+              const slice = buf.slice(i * CHUNK, Math.min((i + 1) * CHUNK, f.size));
+              const form = new FormData();
+              form.append("name", f.name);
+              form.append("target", uploadTarget);
+              form.append("chunkIndex", String(i));
+              form.append("totalChunks", String(totalChunks));
+              form.append("data", new Blob([slice]), f.name);
+              const res = await fetch(`/api/sandboxes/${sandboxId}/upload`, {
+                method: "POST",
+                body: form,
+              });
+              const d = await res.json().catch(() => ({ message: "Upload failed (server error)." }));
+              if (!res.ok) {
+                results.errors.push(`${f.name}: ${d.message ?? d.error ?? "chunk upload failed"}`);
+                break;
+              }
+              if (i === totalChunks - 1) {
+                (d.skills ?? []).forEach((s: string) => results.skills.push(s));
+                (d.written ?? []).forEach((w: string) => results.written.push(w));
+                (d.errors ?? []).forEach((e: string) => results.errors.push(e));
+              }
+            }
+          }
+        } catch (e) {
+          results.errors.push(`${f.name}: ${e instanceof Error ? e.message : "upload failed"}`);
+        }
       }
+
+      const parts: string[] = [];
+      if (results.skills.length) parts.push(`${results.skills.length} skill(s) installed`);
+      if (results.written.length) parts.push(`${results.written.length} file(s) written`);
+      if (results.errors.length) parts.push(`${results.errors.length} failed: ${results.errors.join("; ")}`);
+      setUploadMsg(parts.join(" · ") || "uploaded");
+      setUploadFiles([]);
     } finally {
       setUploading(false);
     }
@@ -653,6 +739,11 @@ export default function SandboxChatPage() {
                 <div className="mt-2 flex items-center gap-2 text-xs text-[var(--muted)]">
                   <span className="h-1.5 w-1.5 animate-pulse-dot rounded-full bg-[var(--accent)]" />
                   Claude Code is working…
+                  {pendingQueue.length > 0 && (
+                    <span className="rounded bg-[var(--panel)] px-2 py-0.5 text-[10px]">
+                      {pendingQueue.length} queued
+                    </span>
+                  )}
                 </div>
               )}
             </div>
@@ -702,18 +793,17 @@ export default function SandboxChatPage() {
                   }}
                   placeholder={
                     busy
-                      ? "Claude Code is working…"
+                      ? "Claude Code is working… type to queue"
                       : slashCmd
                         ? `${slashCmd.name} ${slashCmd.needsArg ? "…" : ""}`
                         : "Ask Claude Code to build something…"
                   }
                   rows={1}
-                  disabled={busy}
-                  className="max-h-40 flex-1 resize-none rounded-xl border border-[var(--border)] bg-white px-4 py-3 text-sm outline-none placeholder:text-[var(--muted)] focus:border-[var(--accent)] disabled:opacity-50"
+                  className="max-h-40 flex-1 resize-none rounded-xl border border-[var(--border)] bg-white px-4 py-3 text-sm outline-none placeholder:text-[var(--muted)] focus:border-[var(--accent)]"
                 />
                 <button
                   onClick={send}
-                  disabled={!input.trim() || busy}
+                  disabled={!input.trim()}
                   className="rounded-xl bg-[var(--accent)] px-4 py-3 text-sm font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-40"
                 >
                   {busy ? "Working…" : "Send"}
@@ -744,6 +834,10 @@ export default function SandboxChatPage() {
 }
 
 function Bubble({ item }: { item: Item }) {
+  // Defensive: never crash on a malformed/null item.
+  if (!item || typeof item !== "object" || !("kind" in item)) {
+    return <div className="mt-3 rounded-lg border border-[var(--border)] bg-white px-4 py-2.5 text-xs text-[var(--muted)]">[untracked event]</div>;
+  }
   if (item.kind === "user") {
     return (
       <div className="flex justify-end">
