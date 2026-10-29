@@ -61,6 +61,11 @@ export default function SandboxChatPage() {
   const [uploadTarget, setUploadTarget] = useState("/home/user");
   const [slashOpen, setSlashOpen] = useState(false);
   const [pendingQueue, setPendingQueue] = useState<string[]>([]);
+  const [sessionCost, setSessionCost] = useState(0);
+  const [conversationList, setConversationList] = useState<
+    Array<{ id: string; title?: string | null; updated_at?: string; sandbox_id?: string | null }>
+  >([]);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -124,6 +129,62 @@ export default function SandboxChatPage() {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [items]);
 
+  // Rebuild UI items from a conversation's stored messages. Tool results are
+  // paired to their tool_use by id, robust to interleaved text/thinking.
+  function buildItemsFromMessages(msgs: Array<{ role: string; content: unknown }>): {
+    items: Item[];
+    sessionId: string | null;
+  } {
+    const restored: Item[] = [];
+    const toolIndex = new Map<string, number>();
+    let sessionId: string | null = null;
+    for (const m of msgs) {
+      if (m.role === "user") {
+        if (typeof m.content === "string") restored.push({ kind: "user", text: m.content });
+      } else if (m.role === "assistant") {
+        const content = m.content as { events?: unknown[] } | string | null;
+        const events = content && typeof content === "object" ? content.events : undefined;
+        if (Array.isArray(events)) {
+          for (const ev of events) {
+            const e = ev as { type?: string; text?: string; name?: string; input?: unknown; content?: string; is_error?: boolean; session_id?: string; id?: string; tool_use_id?: string };
+            if (e.type === "system" && e.session_id) sessionId = e.session_id;
+            else if (e.type === "assistant_text" && e.text) restored.push({ kind: "assistant", text: e.text });
+            else if (e.type === "assistant_thinking" && e.text) restored.push({ kind: "thinking", text: e.text });
+            else if (e.type === "tool_use" && e.name) {
+              const idx = restored.length;
+              restored.push({ kind: "tool", name: e.name, input: e.input });
+              if (e.id) toolIndex.set(e.id, idx);
+            } else if (e.type === "tool_result" && e.content) {
+              const idx = e.tool_use_id ? toolIndex.get(e.tool_use_id) : undefined;
+              const target = idx !== undefined ? restored[idx] : undefined;
+              if (target && target.kind === "tool") {
+                target.result = e.content;
+                target.isError = e.is_error;
+              } else if (idx === undefined) {
+                restored.push({ kind: "notice", text: `[tool result] ${String(e.content).slice(0, 200)}` });
+              }
+            }
+          }
+        } else if (typeof content === "string") {
+          restored.push({ kind: "assistant", text: content });
+        }
+      }
+    }
+    return { items: restored, sessionId };
+  }
+
+  // Load a conversation's transcript into the UI (used on mount and when
+  // switching conversations from the history dropdown).
+  async function loadConversation(convId: string): Promise<void> {
+    const msgRes = await fetch(`/api/conversations/${convId}`);
+    if (!msgRes.ok) return;
+    const msgData = await msgRes.json();
+    const msgs: Array<{ role: string; content: unknown }> = msgData.messages ?? [];
+    const { items: restored, sessionId } = buildItemsFromMessages(msgs);
+    setItems(restored);
+    if (sessionId) setClaudeSessionId(sessionId);
+  }
+
   // On mount, restore the saved conversation (transcript + Claude session id)
   // for this sandbox so history survives a page reload.
   useEffect(() => {
@@ -137,58 +198,16 @@ export default function SandboxChatPage() {
           id: string;
           sandbox_id?: string | null;
           model?: string | null;
+          title?: string | null;
+          updated_at?: string;
         }> = data.conversations ?? [];
+        if (cancelled) return;
+        setConversationList(convs);
         const conv = convs.find((c) => c.sandbox_id === sandboxId);
         if (!conv || cancelled) return;
         setConversationId(conv.id);
         if (conv.model) setModel(conv.model);
-        const msgRes = await fetch(`/api/conversations/${conv.id}`);
-        if (!msgRes.ok || cancelled) return;
-        const msgData = await msgRes.json();
-        const msgs: Array<{ role: string; content: unknown }> = msgData.messages ?? [];
-        const restored: Item[] = [];
-        // tool_use_id -> index into restored[] so results can be paired even
-        // when text/thinking interleaves between a tool call and its result.
-        const toolIndex = new Map<string, number>();
-        let lastSessionId: string | null = null;
-        for (const m of msgs) {
-          if (m.role === "user") {
-            if (typeof m.content === "string") restored.push({ kind: "user", text: m.content });
-          } else if (m.role === "assistant") {
-            const content = m.content as { events?: unknown[] } | string | null;
-            const events = content && typeof content === "object" ? content.events : undefined;
-            if (Array.isArray(events)) {
-              for (const ev of events) {
-                const e = ev as { type?: string; text?: string; name?: string; input?: unknown; content?: string; is_error?: boolean; session_id?: string; id?: string; tool_use_id?: string };
-                if (e.type === "system" && e.session_id) lastSessionId = e.session_id;
-                else if (e.type === "assistant_text" && e.text) restored.push({ kind: "assistant", text: e.text });
-                else if (e.type === "assistant_thinking" && e.text) restored.push({ kind: "thinking", text: e.text });
-                else if (e.type === "tool_use" && e.name) {
-                  const idx = restored.length;
-                  restored.push({ kind: "tool", name: e.name, input: e.input });
-                  if (e.id) toolIndex.set(e.id, idx);
-                }
-                else if (e.type === "tool_result" && e.content) {
-                  const idx = e.tool_use_id ? toolIndex.get(e.tool_use_id) : undefined;
-                  const target = idx !== undefined ? restored[idx] : undefined;
-                  if (target && target.kind === "tool") {
-                    target.result = e.content;
-                    target.isError = e.is_error;
-                  } else if (idx === undefined) {
-                    // orphan result — append as a notice to avoid losing it
-                    restored.push({ kind: "notice", text: `[tool result] ${String(e.content).slice(0, 200)}` });
-                  }
-                }
-              }
-            } else if (typeof content === "string") {
-              restored.push({ kind: "assistant", text: content });
-            }
-          }
-        }
-        if (!cancelled) {
-          setItems(restored);
-          if (lastSessionId) setClaudeSessionId(lastSessionId);
-        }
+        await loadConversation(conv.id);
       } catch {
         /* ignore load errors */
       }
@@ -196,6 +215,7 @@ export default function SandboxChatPage() {
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sandboxId]);
 
   async function send() {
@@ -304,6 +324,9 @@ export default function SandboxChatPage() {
               output: ev.output_tokens,
               cost: ev.cost_usd,
             });
+            if (ev.cost_usd !== undefined) {
+              setSessionCost((c) => c + ev.cost_usd!);
+            }
             break;
           case "error":
             setItems((prev) => [...prev, { kind: "notice", text: ev.message }]);
@@ -466,9 +489,76 @@ export default function SandboxChatPage() {
           >
             {sandboxState}
           </span>
+          {sessionCost > 0 && (
+            <span
+              className="rounded-full bg-[var(--panel)] px-2 py-0.5 font-mono text-[11px] text-[var(--muted)]"
+              title="Estimated model spend this session (from usage events)"
+            >
+              ${sessionCost.toFixed(4)}
+            </span>
+          )}
         </div>
 
         <div className="flex items-center gap-2">
+          {/* conversation history */}
+          <div className="relative">
+            <button
+              onClick={() => setHistoryOpen((o) => !o)}
+              className="flex items-center gap-1.5 rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs text-[var(--foreground)] hover:border-[var(--accent)]"
+              title="Conversation history"
+            >
+              <span>🕘</span>
+              <span className="hidden sm:inline">History</span>
+            </button>
+            {historyOpen && (
+              <div className="absolute right-0 z-20 mt-1 w-80 animate-fade-up rounded-xl border border-[var(--border)] bg-white shadow-2xl">
+                <ul className="max-h-80 overflow-y-auto p-1">
+                  {conversationList.map((c) => (
+                    <li key={c.id} className="group flex items-center gap-1">
+                      <button
+                        onClick={async () => {
+                          setHistoryOpen(false);
+                          setConversationId(c.id);
+                          await loadConversation(c.id);
+                        }}
+                        className={`min-w-0 flex-1 rounded-lg px-3 py-2 text-left text-xs hover:bg-[var(--panel)] ${
+                          c.id === conversationId ? "text-[var(--accent)]" : "text-[var(--foreground)]"
+                        }`}
+                      >
+                        <span className="block truncate">{c.title ?? c.id.slice(0, 12) + "…"}</span>
+                        {c.updated_at && (
+                          <span className="block text-[10px] text-[var(--muted)]">
+                            {new Date(c.updated_at).toLocaleString()}
+                          </span>
+                        )}
+                      </button>
+                      <button
+                        onClick={async () => {
+                          const res = await fetch(`/api/conversations/${c.id}`, { method: "DELETE" });
+                          if (res.ok) {
+                            setConversationList((l) => l.filter((x) => x.id !== c.id));
+                            if (c.id === conversationId) {
+                              setItems([]);
+                              setConversationId(null);
+                              setClaudeSessionId(null);
+                            }
+                          }
+                        }}
+                        className="shrink-0 rounded-md px-2 py-1 text-[10px] text-red-500 opacity-0 group-hover:opacity-100 hover:bg-red-50"
+                        title="Delete conversation"
+                      >
+                        delete
+                      </button>
+                    </li>
+                  ))}
+                  {conversationList.length === 0 && (
+                    <li className="px-3 py-3 text-xs text-[var(--muted)]">No conversations yet</li>
+                  )}
+                </ul>
+              </div>
+            )}
+          </div>
+
           {/* model picker */}
           <div className="relative">
             <button
@@ -898,62 +988,149 @@ function Bubble({ item }: { item: Item }) {
 }
 
 function TerminalView({ sandboxId }: { sandboxId: string }) {
-  const [lines, setLines] = useState<string[]>(["Remote shell in your sandbox."]);
-  const [cmd, setCmd] = useState("");
-  const [running, setRunning] = useState(false);
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const termRef = useRef<import("@xterm/xterm").Terminal | null>(null);
+  const [status, setStatus] = useState<"connecting" | "connected" | "error">("connecting");
+  const [errMsg, setErrMsg] = useState<string | null>(null);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView();
-  }, [lines]);
+    let cancelled = false;
+    let abort: AbortController | null = null;
+    let term: import("@xterm/xterm").Terminal | null = null;
+    let removeResize: (() => void) | null = null;
+    let pid: number | null = null;
 
-  async function run() {
-    const c = cmd.trim();
-    if (!c || running) return;
-    setCmd("");
-    setRunning(true);
-    setLines((l) => [...l, `$ ${c}`]);
-    try {
-      const res = await fetch(`/api/sandboxes/${sandboxId}/exec`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ command: c }),
-      });
-      const d = await res.json();
-      if (!res.ok) {
-        setLines((l) => [...l, d.message ?? d.error ?? "exec failed"]);
-      } else {
-        if (d.stdout) setLines((l) => [...l, d.stdout.replace(/\n$/, "")]);
-        if (d.stderr) setLines((l) => [...l, d.stderr.replace(/\n$/, "")]);
-        if (d.exitCode !== 0) setLines((l) => [...l, `[exit ${d.exitCode}]`]);
+    (async () => {
+      try {
+        const [{ Terminal }, { FitAddon }] = await Promise.all([
+          import("@xterm/xterm"),
+          import("@xterm/addon-fit"),
+        ]);
+        if (cancelled || !containerRef.current) return;
+
+        term = new Terminal({
+          cursorBlink: true,
+          fontSize: 13,
+          fontFamily: "var(--font-mono), monospace",
+          theme: {
+            background: "#1f1e1c",
+            foreground: "#f4f2ee",
+            cursor: "#d97757",
+          },
+        });
+        termRef.current = term;
+        const fit = new FitAddon();
+        term.loadAddon(fit);
+        term.open(containerRef.current);
+        fit.fit();
+
+        const start = await fetch(`/api/sandboxes/${sandboxId}/terminal/start`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ cols: term.cols, rows: term.rows }),
+        });
+        const startData = await start.json().catch(() => ({}));
+        if (!start.ok || !Number.isInteger(startData.pid)) {
+          throw new Error(startData.message ?? startData.error ?? "Could not start terminal");
+        }
+        pid = startData.pid;
+
+        term.onData((data) => {
+          fetch(`/api/sandboxes/${sandboxId}/terminal/input`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ pid, data }),
+          }).catch(() => undefined);
+        });
+
+        const resize = () => {
+          fit.fit();
+          const t = termRef.current;
+          if (!t) return;
+          const { cols, rows } = t;
+          fetch(`/api/sandboxes/${sandboxId}/terminal/resize`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ pid, cols, rows }),
+          }).catch(() => undefined);
+        };
+        window.addEventListener("resize", resize);
+        removeResize = () => window.removeEventListener("resize", resize);
+
+        // Fetch streaming is used instead of EventSource because the route
+        // emits NDJSON and the stream carries cookies for authentication.
+        abort = new AbortController();
+        const response = await fetch(`/api/sandboxes/${sandboxId}/terminal/stream?pid=${pid}`, {
+          signal: abort.signal,
+          cache: "no-store",
+        });
+        if (!response.ok || !response.body) {
+          const text = await response.text().catch(() => "terminal stream failed");
+          throw new Error(text || `terminal stream failed (${response.status})`);
+        }
+        setStatus("connected");
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let pending = "";
+        while (!cancelled) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          pending += decoder.decode(value, { stream: true });
+          let newline: number;
+          while ((newline = pending.indexOf("\n")) >= 0) {
+            const line = pending.slice(0, newline).trim();
+            pending = pending.slice(newline + 1);
+            if (!line) continue;
+            try {
+              const msg = JSON.parse(line) as { type: string; data?: string; message?: string };
+              if (msg.type === "data" && msg.data) {
+                const bytes = Uint8Array.from(atob(msg.data), (c) => c.charCodeAt(0));
+                term.write(bytes);
+              } else if (msg.type === "error") {
+                throw new Error(msg.message ?? "terminal stream failed");
+              } else if (msg.type === "exit") {
+                setStatus("error");
+                setErrMsg("Shell exited. Reopen the Terminal tab to start a new shell.");
+              }
+            } catch (e) {
+              if (e instanceof Error && e.message !== "Unexpected end of JSON input") throw e;
+            }
+          }
+        }
+      } catch (e) {
+        if (cancelled) return;
+        setStatus("error");
+        setErrMsg(e instanceof Error ? e.message : "failed to load terminal");
       }
-    } finally {
-      setRunning(false);
-    }
-  }
+    })();
+
+    return () => {
+      cancelled = true;
+      abort?.abort();
+      removeResize?.();
+      term?.dispose();
+      termRef.current = null;
+    };
+  }, [sandboxId]);
 
   return (
-    <div className="flex flex-1 flex-col bg-[#1f1e1c] p-4 font-mono text-xs">
-      <div className="flex-1 overflow-y-auto rounded-xl border border-[var(--border)] bg-black/30 p-3">
-        {lines.map((l, i) => (
-          <pre key={i} className="whitespace-pre-wrap text-zinc-200">
-            {l}
-          </pre>
-        ))}
-        <div ref={bottomRef} />
+    <div className="relative flex flex-1 flex-col bg-[#1f1e1c] p-3">
+      <div className="mb-2 flex items-center justify-between text-[11px] text-zinc-500">
+        <span className="flex items-center gap-2">
+          <span
+            className={`h-1.5 w-1.5 rounded-full ${
+              status === "connected"
+                ? "bg-emerald-400"
+                : status === "error"
+                  ? "bg-red-400"
+                  : "bg-amber-400 animate-pulse-dot"
+            }`}
+          />
+          {status === "connected" ? "connected" : status === "error" ? errMsg ?? "error" : "connecting…"}
+        </span>
+        <span className="font-mono">bash · {sandboxId.slice(0, 10)}…</span>
       </div>
-      <div className="mt-2 flex gap-2 text-zinc-200">
-        <span className="py-2 text-emerald-400">$</span>
-        <input
-          value={cmd}
-          onChange={(e) => setCmd(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && run()}
-          placeholder="ls -la"
-          disabled={running}
-          className="flex-1 bg-transparent py-2 outline-none placeholder:text-zinc-600"
-          autoFocus
-        />
-      </div>
+      <div ref={containerRef} className="min-h-0 flex-1 overflow-hidden rounded-lg" />
     </div>
   );
 }

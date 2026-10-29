@@ -1,8 +1,8 @@
-
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
 import { e2bProvider } from "@/lib/sandbox";
 import { env } from "@/lib/env";
+import { bootstrapSandbox } from "@/lib/bootstrap";
 
 export async function GET() {
   const session = await getSession();
@@ -46,6 +46,8 @@ export async function POST(req: Request) {
     } catch (e) {
       console.warn("setNetwork failed", e);
     }
+    // Provision default packages in the background (no-op on baked templates).
+    void bootstrapSandbox(session.sk, info.sandboxId);
     return NextResponse.json({ sandbox: info }, { status: 201 });
   } catch (e: unknown) {
     return handleError(e);
