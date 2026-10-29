@@ -66,6 +66,16 @@ export default function SandboxChatPage() {
     Array<{ id: string; title?: string | null; updated_at?: string; sandbox_id?: string | null }>
   >([]);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [userName, setUserName] = useState<string | null>(null);
+  const [envOpen, setEnvOpen] = useState(false);
+  const [envVars, setEnvVars] = useState<Record<string, string>>({});
+  const [envKey, setEnvKey] = useState("");
+  const [envVal, setEnvVal] = useState("");
+  const [filesOpen, setFilesOpen] = useState(false);
+  const [fileTree, setFileTree] = useState<Array<{ name: string; type: string; path: string; size?: number }>>([]);
+  const [filePath, setFilePath] = useState("/home/user");
+  const [fileContent, setFileContent] = useState<string | null>(null);
+  const [fileViewPath, setFileViewPath] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -462,6 +472,45 @@ export default function SandboxChatPage() {
     }
   }
 
+  // current user name for greeting
+  useEffect(() => {
+    fetch("/api/me")
+      .then((r) => r.json())
+      .then((d) => {
+        if (d?.name) setUserName(d.name);
+      })
+      .catch(() => undefined);
+  }, []);
+
+  // load env vars
+  const loadEnv = useCallback(async () => {
+    const res = await fetch(`/api/sandboxes/${sandboxId}/env`);
+    if (res.ok) {
+      const d = await res.json();
+      setEnvVars(d.vars ?? {});
+    }
+  }, [sandboxId]);
+
+  const loadFiles = useCallback(async (path: string) => {
+    setFilePath(path);
+    setFileContent(null);
+    setFileViewPath(null);
+    const res = await fetch(`/api/sandboxes/${sandboxId}/files?path=${encodeURIComponent(path)}`);
+    if (res.ok) {
+      const d = await res.json();
+      setFileTree(d.entries ?? []);
+    }
+  }, [sandboxId]);
+
+  const openFile = useCallback(async (path: string) => {
+    const res = await fetch(`/api/sandboxes/${sandboxId}/files/content?path=${encodeURIComponent(path)}`);
+    if (res.ok) {
+      const d = await res.json();
+      setFileContent(d.content ?? "");
+      setFileViewPath(path);
+    }
+  }, [sandboxId]);
+
   return (
     <div className="flex h-screen flex-col">
       {/* header */}
@@ -659,6 +708,32 @@ export default function SandboxChatPage() {
             )}
           </div>
 
+          {/* env vars */}
+          <button
+            onClick={() => {
+              setEnvOpen((o) => !o);
+              if (!envOpen) loadEnv();
+            }}
+            className="flex items-center gap-1.5 rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs text-[var(--foreground)] hover:border-[var(--accent)]"
+            title="Environment variables"
+          >
+            <span>⚙</span>
+            <span className="hidden sm:inline">Env</span>
+          </button>
+
+          {/* files */}
+          <button
+            onClick={() => {
+              setFilesOpen((o) => !o);
+              if (!filesOpen) loadFiles("/home/user");
+            }}
+            className="flex items-center gap-1.5 rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs text-[var(--foreground)] hover:border-[var(--accent)]"
+            title="Browse sandbox files"
+          >
+            <span>📁</span>
+            <span className="hidden sm:inline">Files</span>
+          </button>
+
           {/* upload */}
           <button
             onClick={() => fileInputRef.current?.click()}
@@ -782,6 +857,144 @@ export default function SandboxChatPage() {
         </div>
       )}
 
+      {envOpen && (
+        <div className="border-b border-[var(--border)] bg-[var(--panel)] px-4 py-3">
+          <div className="mx-auto flex max-w-3xl flex-col gap-3">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold">Environment variables</span>
+              <button
+                onClick={() => setEnvOpen(false)}
+                className="rounded-md px-3 py-1.5 text-xs text-[var(--muted)] hover:bg-white"
+              >
+                Close
+              </button>
+            </div>
+            <ul className="space-y-1">
+              {Object.entries(envVars).map(([k, v]) => (
+                <li key={k} className="flex items-center gap-2 rounded-md bg-white px-3 py-1.5 text-xs">
+                  <span className="font-mono text-[var(--accent)]">{k}</span>
+                  <span className="min-w-0 flex-1 truncate font-mono text-[var(--muted)]">{v}</span>
+                  <button
+                    onClick={async () => {
+                      await fetch(`/api/sandboxes/${sandboxId}/env`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ delete: k }),
+                      });
+                      loadEnv();
+                    }}
+                    className="shrink-0 text-[10px] text-red-500 hover:underline"
+                  >
+                    remove
+                  </button>
+                </li>
+              ))}
+              {Object.keys(envVars).length === 0 && (
+                <li className="text-xs text-[var(--muted)]">No env vars set.</li>
+              )}
+            </ul>
+            <div className="flex items-center gap-2">
+              <input
+                value={envKey}
+                onChange={(e) => setEnvKey(e.target.value)}
+                placeholder="KEY"
+                className="w-40 rounded-md border border-[var(--border)] bg-white px-2 py-1 font-mono text-xs outline-none focus:border-[var(--accent)]"
+              />
+              <input
+                value={envVal}
+                onChange={(e) => setEnvVal(e.target.value)}
+                placeholder="value"
+                className="flex-1 rounded-md border border-[var(--border)] bg-white px-2 py-1 font-mono text-xs outline-none focus:border-[var(--accent)]"
+              />
+              <button
+                onClick={async () => {
+                  if (!envKey.trim()) return;
+                  await fetch(`/api/sandboxes/${sandboxId}/env`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ key: envKey.trim(), value: envVal }),
+                  });
+                  setEnvKey("");
+                  setEnvVal("");
+                  loadEnv();
+                }}
+                className="rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white hover:bg-[var(--accent-hover)]"
+              >
+                Add
+              </button>
+            </div>
+            <p className="text-[10px] text-[var(--muted)]">
+              Vars are sourced into Claude Code runs and written to ~/.claude-cloud-env.sh for terminals.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {filesOpen && (
+        <div className="border-b border-[var(--border)] bg-[var(--panel)] px-4 py-3">
+          <div className="mx-auto flex max-w-3xl flex-col gap-3">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold">Files — {filePath}</span>
+              <div className="flex gap-2">
+                {filePath !== "/home/user" && (
+                  <button
+                    onClick={() => {
+                      const parent = filePath.replace(/\/[^/]+\/?$/, "") || "/home/user";
+                      loadFiles(parent === "" ? "/" : parent);
+                    }}
+                    className="rounded-md px-3 py-1.5 text-xs text-[var(--muted)] hover:bg-white"
+                  >
+                    ↑ Up
+                  </button>
+                )}
+                <button
+                  onClick={() => setFilesOpen(false)}
+                  className="rounded-md px-3 py-1.5 text-xs text-[var(--muted)] hover:bg-white"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <ul className="max-h-64 space-y-1 overflow-y-auto rounded-md bg-white p-2">
+                {fileTree.map((e) => (
+                  <li key={e.path}>
+                    <button
+                      onClick={() => {
+                        if (e.type === "directory" || e.type === "dir") loadFiles(e.path);
+                        else openFile(e.path);
+                      }}
+                      className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs hover:bg-[var(--panel)]"
+                    >
+                      <span>{e.type === "directory" || e.type === "dir" ? "📁" : "📄"}</span>
+                      <span className="truncate font-mono">{e.name}</span>
+                      {typeof e.size === "number" && (
+                        <span className="ml-auto text-[10px] text-[var(--muted)]">{e.size} B</span>
+                      )}
+                    </button>
+                  </li>
+                ))}
+                {fileTree.length === 0 && (
+                  <li className="text-xs text-[var(--muted)]">Empty directory.</li>
+                )}
+              </ul>
+              <div className="max-h-64 overflow-auto rounded-md bg-white p-2">
+                {fileViewPath ? (
+                  <>
+                    <p className="mb-1 truncate font-mono text-[10px] text-[var(--muted)]">{fileViewPath}</p>
+                    <pre className="whitespace-pre-wrap break-words font-mono text-[11px] text-[var(--foreground)]">
+                      {fileContent ?? ""}
+                    </pre>
+                  </>
+                ) : (
+                  <p className="text-xs text-[var(--muted)]">Select a file to preview.</p>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {sandboxState === "gone" ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-3 text-[var(--muted)]">
           <p>This sandbox no longer exists.</p>
@@ -803,7 +1016,7 @@ export default function SandboxChatPage() {
                 <div className="mt-20 text-center">
                   <p className="font-serif text-4xl text-[var(--accent)]">⌾</p>
                   <p className="mt-4 font-serif text-xl text-[var(--foreground)]">
-                    Claude Code Cloud
+                    {userName ? `Hey ${userName}` : "Hey there"}
                   </p>
                   <p className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-[var(--muted)]">
                     Claude Code runs in your sandbox. Ask it to build, fix, or explore
@@ -858,6 +1071,114 @@ export default function SandboxChatPage() {
                   ))}
                 </div>
               )}
+              <div className="mb-2 flex items-center gap-2 text-xs">
+                <div className="relative">
+                  <button
+                    onClick={() => setModelOpen((o) => !o)}
+                    className="flex max-w-[260px] items-center gap-2 rounded-lg border border-[var(--border)] bg-white px-2.5 py-1.5 text-xs text-[var(--foreground)] hover:border-[var(--accent)]"
+                  >
+                    <span className="truncate font-mono">{model}</span>
+                    <span className="shrink-0 text-[var(--muted)]">▾</span>
+                  </button>
+                  {modelOpen && (
+                    <div className="absolute bottom-full left-0 z-20 mb-1 w-[420px] animate-fade-up rounded-xl border border-[var(--border)] bg-white shadow-2xl">
+                      <div className="flex items-center gap-2 border-b border-[var(--border)] px-3 py-2">
+                        <span className="text-xs text-[var(--muted)]">🔍</span>
+                        <input
+                          autoFocus
+                          value={modelFilter}
+                          onChange={(e) => setModelFilter(e.target.value)}
+                          placeholder="Search models…"
+                          className="w-full bg-transparent text-sm outline-none placeholder:text-[var(--muted)]"
+                        />
+                      </div>
+                      <div className="flex border-b border-[var(--border)] p-1 text-[11px]">
+                        {[
+                          { key: "all", label: "All" },
+                          { key: "free", label: "Free" },
+                          { key: "community", label: "Community" },
+                        ].map((f) => (
+                          <button
+                            key={f.key}
+                            onClick={() => setModelFilter(f.key === "all" ? "" : f.key)}
+                            className={`rounded-md px-2.5 py-1 ${
+                              (f.key === "all" && !modelFilter) ||
+                              (f.key === "free" && modelFilter === "free") ||
+                              (f.key === "community" && modelFilter === "community")
+                                ? "bg-[var(--panel)] text-[var(--accent)]"
+                                : "text-[var(--muted)] hover:text-[var(--foreground)]"
+                            }`}
+                          >
+                            {f.label}
+                          </button>
+                        ))}
+                      </div>
+                      <ul className="max-h-[320px] overflow-y-auto p-1">
+                        {(modelFilter === "free" || modelFilter === "community"
+                          ? filteredModels.filter((m) =>
+                              modelFilter === "free" ? !m.paid_only : m.community,
+                            )
+                          : filteredModels
+                        )
+                          .slice(0, 80)
+                          .map((m) => (
+                            <li key={m.id}>
+                              <button
+                                onClick={() => {
+                                  setModel(m.id);
+                                  setModelOpen(false);
+                                  setModelFilter("");
+                                }}
+                                className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs hover:bg-[var(--panel)] ${
+                                  m.id === model ? "text-[var(--accent)]" : "text-[var(--foreground)]"
+                                }`}
+                              >
+                                <span className="min-w-0 flex-1">
+                                  <span className="block truncate font-mono">{m.id}</span>
+                                  <span className="block truncate text-[10px] text-[var(--muted)]">
+                                    {m.title ?? m.publisher ?? ""}
+                                  </span>
+                                </span>
+                                <span className="flex shrink-0 gap-1">
+                                  {m.community && (
+                                    <span className="rounded bg-purple-100 px-1.5 py-0.5 text-[9px] text-purple-700">
+                                      community
+                                    </span>
+                                  )}
+                                  {m.paid_only ? (
+                                    <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[9px] text-amber-700">
+                                      paid
+                                    </span>
+                                  ) : (
+                                    <span className="rounded bg-green-100 px-1.5 py-0.5 text-[9px] text-green-700">
+                                      free
+                                    </span>
+                                  )}
+                                  {m.reasoning && (
+                                    <span className="rounded bg-[var(--panel)] px-1.5 py-0.5 text-[9px] text-[var(--muted)]">
+                                      reasoning
+                                    </span>
+                                  )}
+                                </span>
+                              </button>
+                            </li>
+                          ))}
+                        {filteredModels.length === 0 && (
+                          <li className="px-3 py-3 text-xs text-[var(--muted)]">No models match</li>
+                        )}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+                <span className="rounded-full bg-[var(--panel)] px-2 py-0.5 text-[10px] text-[var(--muted)]">
+                  {sandboxState}
+                </span>
+                {sessionCost > 0 && (
+                  <span className="rounded-full bg-[var(--panel)] px-2 py-0.5 font-mono text-[10px] text-[var(--muted)]">
+                    ${sessionCost.toFixed(4)}
+                  </span>
+                )}
+              </div>
               <div className="flex items-end gap-2">
                 <button
                   onClick={() => setSlashOpen((o) => !o)}

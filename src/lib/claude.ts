@@ -40,6 +40,7 @@ export function contextLimitFor(model: string): number {
 
 export function claudeCommand(model: string, resumeSessionId?: string | null): string {
   const parts = [
+    "source /home/user/.claude-cloud-env.sh 2>/dev/null;",
     "claude",
     "-p",
     "--output-format stream-json",

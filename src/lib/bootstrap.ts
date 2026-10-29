@@ -40,6 +40,18 @@ export async function bootstrapSandbox(
         { timeoutMs: 240_000 },
       ).catch(() => undefined);
     }
+
+    // Ensure GitHub CLI is present (best-effort).
+    const hasGh = await sbx.commands.run(
+      "command -v gh >/dev/null 2>&1 && echo yes || echo no",
+      { timeoutMs: 15_000 },
+    );
+    if (!hasGh.stdout.includes("yes")) {
+      await sbx.commands.run(
+        "(type -p wget >/dev/null || (apt-get update && apt-get install -y wget)) && mkdir -p -m 755 /etc/apt/keyrings && wget -qO- https://cli.github.com/packages/githubcli-archive-keyring.gpg | tee /etc/apt/keyrings/githubcli-archive-keyring.gpg >/dev/null && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg && echo 'deb [arch='$(dpkg --print-architecture)' signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main' > /etc/apt/sources.list.d/github-cli.list && apt-get update && apt-get install -y gh && rm -rf /var/lib/apt/lists/*",
+        { timeoutMs: 240_000 },
+      ).catch(() => undefined);
+    }
   } catch (e) {
     // Bootstrap is best-effort; never let it break sandbox creation.
     console.warn(`bootstrap skip ${sandboxId}:`, e instanceof Error ? e.message : String(e));

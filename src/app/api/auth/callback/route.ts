@@ -74,11 +74,12 @@ export async function GET(req: Request) {
     console.error("userinfo failed", userRes.status, await userRes.text());
     return NextResponse.redirect(new URL("/?error=userinfo_failed", url.origin));
   }
-  const userJson = (await userRes.json()) as { sub?: string };
+  const userJson = (await userRes.json()) as { sub?: string; name?: string; email?: string; github_username?: string };
   const sub = userJson.sub;
   if (!sub) {
     return NextResponse.redirect(new URL("/?error=no_sub", url.origin));
   }
+  const name = userJson.name ?? userJson.github_username ?? userJson.email ?? undefined;
 
   // The user's sk_ key may be long-lived ("never expires"), so do NOT tie the
   // session cookie to the token's expires_in (which can be short/missing and
@@ -88,6 +89,7 @@ export async function GET(req: Request) {
   await setSessionCookie({
     sub,
     sk,
+    name,
     expiresAt: Date.now() + SESSION_LIFETIME_MS,
   });
 

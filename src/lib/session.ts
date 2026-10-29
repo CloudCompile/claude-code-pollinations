@@ -5,6 +5,7 @@ import { env } from "./env";
 export type Session = {
   sub: string;
   sk: string;
+  name?: string;
   expiresAt: number; // epoch ms
 };
 
